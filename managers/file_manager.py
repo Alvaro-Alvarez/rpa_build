@@ -1,0 +1,69 @@
+import json
+from pathlib import Path
+
+from config import (
+    ASSEMBLY_INFO_API_REST,
+    ASSEMBLY_INFO_EXECUTOR_SER,
+    ASSEMBLY_INFO_ORCHESTRATOR,
+    ASSEMBLY_INFO_TASK_SCHEDULER_SERVICE,
+    BUILD_VERSION,
+    CHANGE_LOG_PATH,
+    GLOBAL_ASSEMBLY_INFO_BACKEND,
+    GLOBAL_ASSEMBLY_INFO_FRONTEND,
+    JSON_NAME,
+    PREVIOUS_BUILD_VERSION,
+)
+
+CHANGE_LOG_READ_ENCODING = "utf-8-sig"
+CHANGE_LOG_WRITE_ENCODING = "utf-8"
+ISSUES_ENCODING = "utf-8"
+ASSEMBLY_ENCODING = "utf-8"
+ASSEMBLY_PATHS = (
+    GLOBAL_ASSEMBLY_INFO_BACKEND,
+    GLOBAL_ASSEMBLY_INFO_FRONTEND,
+    ASSEMBLY_INFO_API_REST,
+    ASSEMBLY_INFO_EXECUTOR_SER,
+    ASSEMBLY_INFO_ORCHESTRATOR,
+    ASSEMBLY_INFO_TASK_SCHEDULER_SERVICE,
+)
+
+
+def update_change_log():
+    issues_json = _read_json(Path(JSON_NAME), encoding=ISSUES_ENCODING)
+    change_log_json = _read_json(Path(CHANGE_LOG_PATH), encoding=CHANGE_LOG_READ_ENCODING)
+
+    changelog_data = change_log_json.get("changelogData")
+    if not isinstance(changelog_data, list):
+        raise ValueError("El change log debe contener una lista 'changelogData'.")
+
+    changelog_data.insert(0, issues_json)
+    _write_json(Path(CHANGE_LOG_PATH), change_log_json, encoding=CHANGE_LOG_WRITE_ENCODING)
+
+
+def update_assembly_versions():
+    for assembly_path in ASSEMBLY_PATHS:
+        update_assembly(Path(assembly_path))
+
+
+def update_assembly(assembly_path: Path):
+    if not assembly_path.exists():
+        raise FileNotFoundError(f"No se encontro el archivo AssemblyInfo: {assembly_path}")
+
+    content = assembly_path.read_text(encoding=ASSEMBLY_ENCODING)
+    if PREVIOUS_BUILD_VERSION not in content:
+        raise ValueError(
+            f"La version anterior {PREVIOUS_BUILD_VERSION} no aparece en {assembly_path}."
+        )
+
+    updated_content = content.replace(PREVIOUS_BUILD_VERSION, BUILD_VERSION)
+    assembly_path.write_text(updated_content, encoding=ASSEMBLY_ENCODING)
+
+
+def _read_json(path: Path, *, encoding: str):
+    with path.open("r", encoding=encoding) as file:
+        return json.load(file)
+
+
+def _write_json(path: Path, payload, *, encoding: str):
+    with path.open("w", encoding=encoding) as file:
+        json.dump(payload, file, indent=2, ensure_ascii=False)
