@@ -137,7 +137,7 @@ def open_teams_and_send_message(
     - Si existe el icono en la barra de tareas (teams_taskbar.png), hacer clic para enfocar.
     - De lo contrario, abrir la app usando OPEN_TEAMS_COMMAND.
     - Esperar unos segundos y validar cabecera de Teams (teams_header.png) con reintentos.
-    - Hacer clic en el chat objetivo (aa_chat_teams.png).
+    - Hacer clic en el chat objetivo (main_teams_chat.png).
     - Hacer clic en la barra de mensajes (chat_teams_unfocused.png), escribir y enviar Enter.
     """
 
@@ -209,8 +209,8 @@ def open_teams_and_send_message(
             raise TimeoutError("No se pudo validar la apertura de Microsoft Teams") from last_exc
 
         # 5) Abrir el chat objetivo (imagen de ancla en la lista de chats)
-        logger.info("Buscando chat objetivo: 'aa_chat_teams.png'")
-        chat_target = wait_for_image("aa_chat_teams.png", timeout=45, interval=1)
+        logger.info("Buscando chat objetivo: 'main_teams_chat.png'")
+        chat_target = wait_for_image("main_teams_chat.png", timeout=45, interval=1)
         pyautogui.click(pyautogui.center(chat_target))
         time.sleep(1)
 
