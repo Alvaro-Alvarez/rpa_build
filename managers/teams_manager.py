@@ -90,38 +90,23 @@ def _paste_text(text: str) -> None:
 
 
 def _type_key_with_optional_link(key: str, link: str) -> None:
-    """Escribe la KEY y, si hay LINK, intenta convertirla en hipervínculo (Ctrl+K).
+    """Escribe la KEY con hipervínculo sin usar Ctrl+K.
 
-    Fallback si falla: añade el link entre paréntesis luego de la KEY.
-    - Si no hay KEY, pega el LINK directamente (URL clickeable por autolink de Teams).
+    Estrategia: si hay KEY y LINK, escribir/pegar "[KEY](LINK)" (Teams lo renderiza al enviar).
+    Si solo hay uno, escribir/pegar el valor disponible como texto plano.
     """
     k = (key or "").strip()
-    lnk = (link or "").strip()
+    l = (link or "").strip()
 
-    if not k:
-        # Sin key, pegar el link tal cual para que Teams lo auto-linkee
-        _paste_text(lnk)
+    if not k and not l:
         return
 
-    # Escribir KEY
-    pyautogui.typewrite(k, interval=0.01)
-
-    if not lnk:
-        return
-
-    # Intentar crear hipervinculo en la KEY recién tipeada
-    try:
-        time.sleep(0.02)
-        pyautogui.hotkey("ctrl", "shift", "left")  # Seleccionar la KEY
-        time.sleep(0.02)
-        pyautogui.hotkey("ctrl", "k")               # Abrir dialogo de hipervinculo
-        time.sleep(0.15)
-        _paste_text(lnk)
-        time.sleep(0.05)
-        pyautogui.press("enter")
-    except Exception:
-        # Fallback: agregar el link en paréntesis
-        pyautogui.typewrite(f" ({lnk})", interval=0.01)
+    if k and l:
+        _paste_text(f"[{k}]({l})")
+    elif k:
+        _paste_text(k)
+    else:
+        _paste_text(l)
 
 
 def open_teams_and_send_message(
@@ -239,24 +224,10 @@ def open_teams_and_send_message(
 
         logger.info("Escribiendo y enviando mensaje en Teams (%s lineas)", len(triples))
         if not triples:
-            # Prefijo requerido por el usuario
-            pyautogui.typewrite("Robobuild: ", interval=0.02)
-            try:
-                pyautogui.keyDown("shift")
-                pyautogui.press("enter")
-            finally:
-                pyautogui.keyUp("shift")
-            time.sleep(0.1)
+            # Sin prefijo; mensaje directo en caso de no haber issues
             pyautogui.typewrite("Sin issues para mostrar", interval=0.02)
         else:
-            # Prefijo requerido por el usuario
-            pyautogui.typewrite("Robobuild: ", interval=0.02)
-            try:
-                pyautogui.keyDown("shift")
-                pyautogui.press("enter")
-            finally:
-                pyautogui.keyUp("shift")
-            time.sleep(0.1)
+            # Sin prefijo; empezar directo con la lista de issues
             for idx, (key, link, summary, assignee_name) in enumerate(triples):
                 # Escribir KEY y, si hay link, convertirlo en hipervinculo real (Ctrl+K)
                 if key or link:
@@ -273,27 +244,29 @@ def open_teams_and_send_message(
                 _paste_text(assignee_name)
 
                 if idx < len(triples) - 1:
-                    # Salto de linea sin enviar
-                    try:
-                        pyautogui.keyDown("shift")
-                        pyautogui.press("enter")
-                    finally:
-                        pyautogui.keyUp("shift")
-                    time.sleep(0.1)
+                    # Doble salto de linea sin enviar
+                    for _ in range(2):
+                        try:
+                            pyautogui.keyDown("shift")
+                            pyautogui.press("enter")
+                        finally:
+                            pyautogui.keyUp("shift")
+                        time.sleep(0.1)
         # Enviar el mensaje al final
         pyautogui.press("enter")
 
-        # 8) Enviar mensaje de seguimiento mencionando a todos
+        # 8) Enviar mensaje de seguimiento
         try:
             time.sleep(0.6)
-            logger.info("Enviando mensaje de seguimiento: Robobuild + @Todos")
-            # Escribir literal "@Todos " seguido del texto pedido
-            pyautogui.typewrite("Robobuild: @Todos ", interval=0.02)
-            pyautogui.typewrite("Por favor validar que esten todos los jiras", interval=0.02)
+            logger.info("Enviando mensaje de seguimiento de validación de Jiras")
+            pyautogui.typewrite(
+                "Robobuild: Por favor, todos deben validar que esten o no sus jiras trabajados, para confirmar esrcibir 'ok!', tal como el ejemplo",
+                interval=0.02,
+            )
             pyautogui.press("enter")
             time.sleep(0.3)
         except Exception as exc:
-            logger.warning("Fallo al enviar mensaje de seguimiento @Todos: %s", exc)
+            logger.warning("Fallo al enviar mensaje de seguimiento de validación: %s", exc)
         time.sleep(0.5)
         logger.info("Mensaje enviado correctamente a traves de Teams")
 

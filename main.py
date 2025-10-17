@@ -30,18 +30,18 @@ def _execute_action(action: Accion) -> None:
             if not ia_manager.valid_json():
                 logger.error("Validacion de JSON fallo")
                 raise ValueError("El json de issues de jira no esta bien formateado.")
-        case Accion.UPDATE_CHANGE_LOG:
-            git_manager.process_code_branch()
-            file_manager.update_change_log()
-        case Accion.UPDATE_ASSEMBLY_VERSIONS:
-            file_manager.update_assembly_versions()
-        case Accion.UPDATE_AIP_VERSIONS:
-            rpa_manager.update_aip_versions()
-        case Accion.UPLOAD_CODE_AND_PR:
-            build_branch = git_manager.create_and_checkout_build_branch()
-            current_branch = git_manager.commit_and_push_all_changes()
-            # TODO: validar funcionamiento y reinicio total si es necesario
-            TfsManager().run_pr_pipeline(source_branch=current_branch or build_branch, target_branch=MAIN_BRANCH)
+        # case Accion.UPDATE_CHANGE_LOG:
+        #     git_manager.process_code_branch()
+        #     file_manager.update_change_log()
+        # case Accion.UPDATE_ASSEMBLY_VERSIONS:
+        #     file_manager.update_assembly_versions()
+        # case Accion.UPDATE_AIP_VERSIONS:
+        #     rpa_manager.update_aip_versions()
+        # case Accion.UPLOAD_CODE_AND_PR:
+        #     build_branch = git_manager.create_and_checkout_build_branch()
+        #     current_branch = git_manager.commit_and_push_all_changes()
+        #     # TODO: validar funcionamiento y reinicio total si es necesario
+        #     TfsManager().run_pr_pipeline(source_branch=current_branch or build_branch, target_branch=MAIN_BRANCH)
         case _:
             raise ValueError(f"Accion desconocida: {action}")
 
