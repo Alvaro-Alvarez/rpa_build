@@ -8,7 +8,18 @@ try:
 except Exception:  # pragma: no cover - opcional
     pyperclip = None  # fallback a tipeo si no está disponible
 
-from config import OPEN_TEAMS_COMMAND
+from config import (
+    OPEN_TEAMS_COMMAND,
+    TEAMS_CONFIRMATION_PARTICIPANTS,
+    TEAMS_CONFIRMATION_POLL_INTERVAL_SECS,
+    TEAMS_CONFIRMATION_FIRST_REMINDER_AFTER_SECS,
+    TEAMS_CONFIRMATION_REMINDER_EVERY_SECS,
+    # Imágenes especiales para controlar el flujo desde el chat
+    TEAMS_FORCE_FORWARD_MAIN,
+    TEAMS_FORCE_FORWARD_SECONDARY,
+    TEAMS_RESTART_MAIN,
+    TEAMS_RESTARTD_SECONDARY,
+)
 from .rpa_manager import wait_for_image, IMAGES_DIR, IMAGE_CONFIDENCE
 
 
@@ -122,7 +133,7 @@ def open_teams_and_send_message(
     - Si existe el icono en la barra de tareas (teams_taskbar.png), hacer clic para enfocar.
     - De lo contrario, abrir la app usando OPEN_TEAMS_COMMAND.
     - Esperar unos segundos y validar cabecera de Teams (teams_header.png) con reintentos.
-    - Hacer clic en el chat objetivo (main_teams_chat.png).
+    - Hacer clic en el chat objetivo (dev_team_chat_teams.png).
     - Hacer clic en la barra de mensajes (chat_teams_unfocused.png), escribir y enviar Enter.
     """
 
@@ -194,8 +205,8 @@ def open_teams_and_send_message(
             raise TimeoutError("No se pudo validar la apertura de Microsoft Teams") from last_exc
 
         # 5) Abrir el chat objetivo (imagen de ancla en la lista de chats)
-        logger.info("Buscando chat objetivo: 'main_teams_chat.png'")
-        chat_target = wait_for_image("main_teams_chat.png", timeout=45, interval=1)
+        logger.info("Buscando chat objetivo: 'dev_team_chat_teams.png'")
+        chat_target = wait_for_image("dev_team_chat_teams.png", timeout=45, interval=1)
         pyautogui.click(pyautogui.center(chat_target))
         time.sleep(1)
 
@@ -274,3 +285,169 @@ def open_teams_and_send_message(
         logger.info("Flujo de Teams finalizado")
     finally:
         _RUNNING = False
+
+
+def _focus_main_chat_and_bar() -> None:
+    """Enfoca el chat principal y la barra de mensajes del chat en Teams."""
+    # Intentar confirmar que Teams está visible (si falla, seguimos y buscamos el chat de todos modos)
+    try:
+        wait_for_image(
+            "teams_header.png",
+            timeout=15,
+            interval=1,
+            taskbar_image_name="teams_taskbar.png",
+            taskbar_click_every=5,
+        )
+    except TimeoutError:
+        pass
+
+    # Seleccionar el chat principal y luego la barra de mensajes
+    chat_target = wait_for_image("dev_team_chat_teams.png", timeout=45, interval=1)
+    pyautogui.click(pyautogui.center(chat_target))
+    time.sleep(0.6)
+
+    chat_bar_candidates = [
+        "chat_teams_unfocused.png",
+        "chat_teams_focused.png",
+        "chat_teams_focused_with_pipe.png",
+    ]
+    chat_bar_match, _ = _wait_for_any_image(chat_bar_candidates, timeout=30, interval=1)
+    pyautogui.click(pyautogui.center(chat_bar_match))
+    time.sleep(0.3)
+
+
+def _send_chat_message(text: str) -> None:
+    _focus_main_chat_and_bar()
+    _paste_text(text)
+    pyautogui.press("enter")
+    time.sleep(0.3)
+
+
+def _is_any_image_visible(image_names: list[str]) -> bool:
+    """Chequea de forma no bloqueante si alguna de las imágenes está visible en pantalla."""
+    for name in image_names:
+        path = IMAGES_DIR / name
+        try:
+            match = pyautogui.locateOnScreen(str(path), confidence=IMAGE_CONFIDENCE)
+        except Exception:
+            match = None
+        if match is not None:
+            return True
+    return False
+
+
+def _format_missing_names(missing: list[str]) -> str:
+    if not missing:
+        return ""
+    return ", ".join(missing)
+
+
+def wait_for_ok_confirmations(
+    participants: list[dict] | None = None,
+    *,
+    poll_interval_secs: int | None = None,
+    first_reminder_after_secs: int | None = None,
+    reminder_every_secs: int | None = None,
+) -> str:
+    """Espera hasta que todos los participantes habilitados confirmen con "ok!".
+
+    La detección se realiza buscando en pantalla las capturas indicadas para cada persona.
+    Envía recordatorios al chat listando las personas que falten después de 10m (configurable)
+    y luego repite recordatorios con la periodicidad indicada hasta que todos confirmen.
+
+    También permite controlar el flujo desde el chat con imágenes especiales:
+    - Forzar avance (continuar aunque falten "ok!")
+    - Reiniciar (cancelar y volver a comenzar el paso)
+    Devuelve uno de: "ok", "force", "restart".
+    """
+    plist = participants if participants is not None else TEAMS_CONFIRMATION_PARTICIPANTS
+    poll = poll_interval_secs if poll_interval_secs is not None else TEAMS_CONFIRMATION_POLL_INTERVAL_SECS
+    first_rem = (
+        first_reminder_after_secs
+        if first_reminder_after_secs is not None
+        else TEAMS_CONFIRMATION_FIRST_REMINDER_AFTER_SECS
+    )
+    repeat_rem = (
+        reminder_every_secs
+        if reminder_every_secs is not None
+        else TEAMS_CONFIRMATION_REMINDER_EVERY_SECS
+    )
+
+    # Preparar mapa de pendientes: {nombre: ruta_imagen}
+    pending: dict[str, str] = {
+        (p.get("name") or "").strip(): (p.get("image") or "").strip()
+        for p in (plist or [])
+        if p.get("enabled", True) and (p.get("name") and p.get("image"))
+    }
+
+    if not pending:
+        logger.info("No hay participantes habilitados para validar; continuando flujo")
+        return "ok"
+
+    logger.info(
+        "Esperando confirmaciones de: %s",
+        list(pending.keys()),
+    )
+
+    start = time.perf_counter()
+    next_reminder_at = start + max(0, int(first_rem))
+
+    while pending:
+        # 1) Antes de chequear participantes, ver si se solicitó reinicio o forzar avance
+        try:
+            force_forward_visible = _is_any_image_visible([
+                TEAMS_FORCE_FORWARD_MAIN,
+                TEAMS_FORCE_FORWARD_SECONDARY,
+            ])
+            restart_visible = _is_any_image_visible([
+                TEAMS_RESTART_MAIN,
+                TEAMS_RESTARTD_SECONDARY,
+            ])
+        except Exception as exc:
+            logger.debug("Fallo al chequear imágenes de control de flujo: %s", exc)
+            force_forward_visible = False
+            restart_visible = False
+
+        if restart_visible:
+            logger.warning("Se detectó petición de reinicio desde el chat; reiniciando paso.")
+            return "restart"
+        if force_forward_visible:
+            logger.warning("Se detectó petición de forzar avance desde el chat; continuando sin esperar más confirmaciones.")
+            return "force"
+        # Revisar todos los pendientes
+        to_remove: list[str] = []
+        for name, img_name in pending.items():
+            img_path = IMAGES_DIR / img_name
+            try:
+                match = pyautogui.locateOnScreen(str(img_path), confidence=IMAGE_CONFIDENCE)
+            except Exception as exc:
+                logger.debug("Fallo locateOnScreen para %s (%s): %s", name, img_path, exc)
+                match = None
+
+            if match is not None:
+                logger.info("Confirmación detectada para '%s' (%s)", name, img_name)
+                to_remove.append(name)
+
+        for name in to_remove:
+            pending.pop(name, None)
+
+        if not pending:
+            break
+
+        now = time.perf_counter()
+        if now >= next_reminder_at:
+            missing_names = list(pending.keys())
+            logger.info("Enviando recordatorio; faltan: %s", missing_names)
+            try:
+                _send_chat_message(
+                    f"Por favor validar los jiras: {_format_missing_names(missing_names)}"
+                )
+            except Exception as exc:
+                logger.warning("No se pudo enviar recordatorio en Teams: %s", exc)
+            # Programar siguiente recordatorio
+            next_reminder_at = now + max(5, int(repeat_rem))
+
+        time.sleep(max(1, int(poll)))
+
+    logger.info("Todos los participantes confirmaron 'ok!'. Continuando.")
+    return "ok"

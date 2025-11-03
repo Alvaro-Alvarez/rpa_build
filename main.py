@@ -7,7 +7,7 @@ from managers import file_manager, git_manager, ia_manager, jira_manager, rpa_ma
 from managers.tfs_manager import TfsManager
 from config import MAIN_BRANCH
 from logging_config import setup_logging
-from managers.teams_manager import open_teams_and_send_message
+from managers.teams_manager import open_teams_and_send_message, wait_for_ok_confirmations
 
 logger = logging.getLogger(__name__)
 
@@ -23,25 +23,33 @@ def _execute_action(action: Accion) -> None:
         case Accion.GET_JIRA_ISSUES:
             issues_extended = jira_manager.get_jira_issues_extended()
             open_teams_and_send_message(issues_extended)
-            # TODO: Manejar validacion y renintento en Teams, si valida, sigue, sino reinicia
+            # Esperar validación de todos los miembros con "ok!" en Teams
+            # Espera confirmaciones y permite controlar el flujo desde el chat
+            decision = wait_for_ok_confirmations()
+            if decision == "restart":
+                logger.warning("Se solicito reinicio desde Teams; reiniciando paso GET_JIRA_ISSUES.")
+                _execute_action(Accion.GET_JIRA_ISSUES)
+                return
+            if decision == "force":
+                logger.warning("Se forzo el avance desde Teams; continuando sin todas las confirmaciones.")
             issues = jira_manager.get_jira_issues()
             jira_manager.export_issues(issues)
 
             if not ia_manager.valid_json():
                 logger.error("Validacion de JSON fallo")
                 raise ValueError("El json de issues de jira no esta bien formateado.")
-        # case Accion.UPDATE_CHANGE_LOG:
-        #     git_manager.process_code_branch()
-        #     file_manager.update_change_log()
-        # case Accion.UPDATE_ASSEMBLY_VERSIONS:
-        #     file_manager.update_assembly_versions()
-        # case Accion.UPDATE_AIP_VERSIONS:
-        #     rpa_manager.update_aip_versions()
-        # case Accion.UPLOAD_CODE_AND_PR:
-        #     build_branch = git_manager.create_and_checkout_build_branch()
-        #     current_branch = git_manager.commit_and_push_all_changes()
-        #     # TODO: validar funcionamiento y reinicio total si es necesario
-        #     TfsManager().run_pr_pipeline(source_branch=current_branch or build_branch, target_branch=MAIN_BRANCH)
+        case Accion.UPDATE_CHANGE_LOG:
+            git_manager.process_code_branch()
+            file_manager.update_change_log()
+        case Accion.UPDATE_ASSEMBLY_VERSIONS:
+            file_manager.update_assembly_versions()
+        case Accion.UPDATE_AIP_VERSIONS:
+            rpa_manager.update_aip_versions()
+        case Accion.UPLOAD_CODE_AND_PR:
+            build_branch = git_manager.create_and_checkout_build_branch()
+            current_branch = git_manager.commit_and_push_all_changes()
+            # TODO: validar funcionamiento y reinicio total si es necesario
+            # TfsManager().run_pr_pipeline(source_branch=current_branch or build_branch, target_branch=MAIN_BRANCH)
         case _:
             raise ValueError(f"Accion desconocida: {action}")
 

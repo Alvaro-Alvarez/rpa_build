@@ -21,12 +21,18 @@ def process_code_branch():
     logger.info("Rama actual: %s", branch)
     if branch == MAIN_BRANCH:
         logger.info("Ya se esta en la rama objetivo '%s'", MAIN_BRANCH)
+        # Asegurarnos de tener los ultimos cambios de remoto
+        run_git_command(["pull"])  # equivale a 'git pull' en la rama actual
         return
 
     logger.info("Se requiere volver a la rama '%s'", MAIN_BRANCH)
     discard_local_changes()
     run_git_command(["checkout", MAIN_BRANCH])
     logger.info("Cambio de rama a '%s' completado", MAIN_BRANCH)
+    # Luego de cambiar a main, traer los ultimos cambios remotos
+    run_git_command(["pull"])  # equivale a 'git pull' en la rama actual
+    logger.info("Se hace pull en la rama: '%s'", MAIN_BRANCH)
+    
 
 
 def discard_local_changes():
