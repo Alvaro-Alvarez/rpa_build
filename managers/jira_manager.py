@@ -16,6 +16,9 @@ from config import (
     JIRA_USER,
     JSON_NAME,
     XLXS_NAME,
+    JIRA_VALIDATE_TAGS,
+    CHANGE_LOG_PATH,
+    TEAMS_CONFIRMATION_PARTICIPANTS,
 )
 
 JIRA_SEARCH_ENDPOINT = "/rest/api/3/search/jql"
@@ -192,3 +195,123 @@ def _request_jira(method: str, url: str, **kwargs) -> requests.Response:
 
     logger.info("Peticion a Jira completada correctamente")
     return response
+
+
+def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[dict]:
+    """
+    Nueva consulta a Jira usando JIRA_VALIDATE_TAGS con reemplazos dinámicos:
+      - {PARTICIPANTS}: jira_key de todos los participantes (incluidos deshabilitados)
+      - {FIX_NUMBER_ONE}: primeros 2 números de BUILD_VERSION (x.xx)
+      - {FIX_NUMBER_TWO}: primeros 3 números (x.xx.x)
+      - {FIX_NUMBER_THREE}: versión completa (4 números)
+      - {LAST_BUILD_DATE}: versionDate del índice 0 del JSON CHANGE_LOG_PATH
+
+    Devuelve lista de dicts: key, summary, assignee_name, assignee_email, link.
+    """
+    logger.info(
+        "Preparando consulta de validación de tags en Jira (max %s)", max_results
+    )
+
+    # Participantes (todas las jira_key, incluso deshabilitados)
+    participants_keys: list[str] = []
+    for p in TEAMS_CONFIRMATION_PARTICIPANTS or []:
+        key = (p.get("jira_key") or "").strip()
+        if key:
+            participants_keys.append(key)
+    participants_replacement = ", ".join(participants_keys)
+
+    # Versiones FIX_NUMBER_*
+    vparts = (BUILD_VERSION or "").split(".")
+    while len(vparts) < 4:
+        vparts.append("0")
+    fix_one = ".".join(vparts[:2])
+    fix_two = ".".join(vparts[:3])
+    fix_three = ".".join(vparts[:4])
+
+    # Fecha del último build desde CHANGE_LOG_PATH (posición 0)
+    try:
+        cl_path = Path(CHANGE_LOG_PATH)
+        with cl_path.open("r", encoding="utf-8") as f:
+            content = json.load(f)
+        last_build_date_raw = (content.get("changelogData") or [{}])[0].get("versionDate") or ""
+        # Formatear fecha a YYYY-MM-DD
+        last_build_date = _to_ymd(last_build_date_raw)
+    except Exception:
+        logger.exception(
+            "No se pudo leer versionDate[0] desde CHANGE_LOG_PATH=%s", CHANGE_LOG_PATH
+        )
+        return []
+
+    jql = (
+        JIRA_VALIDATE_TAGS
+        .replace("{PARTICIPANTS}", participants_replacement)
+        .replace("{FIX_NUMBER_ONE}", fix_one)
+        .replace("{FIX_NUMBER_TWO}", fix_two)
+        .replace("{FIX_NUMBER_THREE}", fix_three)
+        .replace("{LAST_BUILD_DATE}", str(last_build_date or ""))
+    )
+
+    query = {
+        "jql": jql,
+        "maxResults": max_results,
+        "fields": JIRA_FIELDS_EXT,
+    }
+    logger.info("Ejecutando consulta JQL (validación): %s", query["jql"])
+
+    try:
+        response = _request_jira("GET", f"{JIRA_URL}{JIRA_SEARCH_ENDPOINT}", params=query)
+    except Exception:
+        logger.exception("No se pudo obtener la informacion de Jira (validación)")
+        raise
+
+    logger.info("Respuesta de Jira (validación) con codigo %s", response.status_code)
+    data = response.json()
+
+    results: List[dict] = []
+    for issue in data.get("issues", []):
+        key = issue.get("key") or ""
+        fields = issue.get("fields", {}) or {}
+        summary = (fields.get("summary") or "").strip()
+        assignee = fields.get("assignee") or {}
+
+        assignee_name = (assignee.get("displayName") or "").strip()
+        assignee_email = (assignee.get("emailAddress") or "").strip()
+        assignee_jira_key = (assignee.get("accountId") or "").strip()
+
+        if key:
+            link = f"{JIRA_URL.rstrip('/')}/browse/{key}"
+            results.append(
+                {
+                    "key": key,
+                    "summary": summary,
+                    "assignee_name": assignee_name,
+                    "assignee_email": assignee_email,
+                    "assignee_jira_key": assignee_jira_key,
+                    "link": link,
+                }
+            )
+
+    logger.info("Se recuperaron %s issues de Jira (validación)", len(results))
+    return results
+
+
+def _to_ymd(date_str: str) -> str:
+    """Intenta convertir una fecha en texto a formato YYYY-MM-DD.
+
+    Soporta formatos comunes: dd/mm/YYYY, dd-mm-YYYY, YYYY-MM-DD, YYYY/MM/DD.
+    Si no reconoce el formato, devuelve el texto original.
+    """
+    s = (date_str or "").strip()
+    if not s:
+        return s
+    # ya en ISO simple
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    # fallback: devolver original
+    return s

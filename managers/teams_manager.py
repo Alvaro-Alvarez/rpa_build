@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import subprocess
 import time
 
@@ -6,7 +6,7 @@ import pyautogui
 try:
     import pyperclip  # type: ignore
 except Exception:  # pragma: no cover - opcional
-    pyperclip = None  # fallback a tipeo si no está disponible
+    pyperclip = None  # fallback a tipeo si no estÃ¡ disponible
 
 from config import (
     OPEN_TEAMS_COMMAND,
@@ -14,7 +14,7 @@ from config import (
     TEAMS_CONFIRMATION_POLL_INTERVAL_SECS,
     TEAMS_CONFIRMATION_FIRST_REMINDER_AFTER_SECS,
     TEAMS_CONFIRMATION_REMINDER_EVERY_SECS,
-    # Imágenes especiales para controlar el flujo desde el chat
+    # ImÃ¡genes especiales para controlar el flujo desde el chat
     TEAMS_FORCE_FORWARD_MAIN,
     TEAMS_FORCE_FORWARD_SECONDARY,
     TEAMS_RESTART_MAIN,
@@ -101,7 +101,7 @@ def _paste_text(text: str) -> None:
 
 
 def _type_key_with_optional_link(key: str, link: str) -> None:
-    """Escribe la KEY con hipervínculo sin usar Ctrl+K.
+    """Escribe la KEY con hipervÃ­nculo sin usar Ctrl+K.
 
     Estrategia: si hay KEY y LINK, escribir/pegar "[KEY](LINK)" (Teams lo renderiza al enviar).
     Si solo hay uno, escribir/pegar el valor disponible como texto plano.
@@ -140,6 +140,9 @@ def open_teams_and_send_message(
     global _RUNNING
     if _RUNNING:
         logger.warning("Flujo de Teams ya en ejecucion; se omite invocacion duplicada")
+        return
+    if not issues_extended:
+        logger.info("No hay issues incompletos para informar en Teams; se omite envio")
         return
     _RUNNING = True
     try:
@@ -220,7 +223,7 @@ def open_teams_and_send_message(
         chat_bar_match, used_image = _wait_for_any_image(chat_bar_candidates, timeout=45, interval=1)
         logger.info("Barra de chat detectada usando '%s'", used_image)
         pyautogui.click(pyautogui.center(chat_bar_match))
-        time.sleep(0.5)
+        time.sleep(1.0)
 
         # 7) Construir mensaje a partir de issues_extended y enviar
         logger.info("Construyendo mensaje con issues extendidos para Teams")
@@ -233,63 +236,49 @@ def open_teams_and_send_message(
 
             triples.append((key, link, summary, assignee_name))
 
-        logger.info("Escribiendo y enviando mensaje en Teams (%s lineas)", len(triples))
-        if not triples:
-            # Sin prefijo; mensaje directo en caso de no haber issues
-            pyautogui.typewrite("Sin issues para mostrar", interval=0.02)
-        else:
-            # Sin prefijo; empezar directo con la lista de issues
-            for idx, (key, link, summary, assignee_name) in enumerate(triples):
-                # Escribir KEY y, si hay link, convertirlo en hipervinculo real (Ctrl+K)
-                if key or link:
-                    _type_key_with_optional_link(key, link)
-                # Separador antes del summary
-                pyautogui.typewrite(" - ", interval=0.01)
-
-                # Pegar SUMMARY desde el portapapeles si es posible
-                _paste_text(summary)
-                time.sleep(0.05)
-
-                # Separador y RESPONSABLE
-                pyautogui.typewrite(" - ", interval=0.01)
-                _paste_text(assignee_name)
-
-                if idx < len(triples) - 1:
-                    # Doble salto de linea sin enviar
-                    for _ in range(2):
-                        try:
-                            pyautogui.keyDown("shift")
-                            pyautogui.press("enter")
-                        finally:
-                            pyautogui.keyUp("shift")
-                        time.sleep(0.1)
-        # Enviar el mensaje al final
+        # Nuevo flujo de mensajes: aviso, listado, e instrucciÃ³n de confirmaciÃ³n
+        intro_msg = ("Robobuild: Los siguientes jiras estan incompletos: les falta el tag DevTeam "
+                     "o el campo FixVersion esta incompleto. Por favor, corregirlos.")
+        pyautogui.typewrite(intro_msg, interval=0.02)
         pyautogui.press("enter")
-
-        # 8) Enviar mensaje de seguimiento
+        time.sleep(1.0)
+        logger.info("Escribiendo y enviando listado en Teams (%s lineas)", len(triples))
+        for idx, (key, link, summary, assignee_name) in enumerate(triples):
+            if key or link:
+                _type_key_with_optional_link(key, link)
+            pyautogui.typewrite(" - ", interval=0.01)
+            _paste_text(summary)
+            time.sleep(0.05)
+            pyautogui.typewrite(" - ", interval=0.01)
+            _paste_text(assignee_name)
+            if idx < len(triples) - 1:
+                for _ in range(2):
+                    try:
+                        pyautogui.keyDown("shift")
+                        pyautogui.press("enter")
+                    finally:
+                        pyautogui.keyUp("shift")
+                    time.sleep(0.1)
+        pyautogui.press("enter")
+        time.sleep(1.0)
         try:
-            time.sleep(0.6)
-            logger.info("Enviando mensaje de seguimiento de validación de Jiras")
-            pyautogui.typewrite(
-                "Robobuild: Por favor, todos deben validar que esten o no sus jiras trabajados, para confirmar esrcibir 'ok!', tal como el ejemplo",
-                interval=0.02,
-            )
+            logger.info("Enviando mensaje de instrucciÃ³n de correccion")
+            pyautogui.typewrite('Una vez finalizada la correccion, escribir "ok!".', interval=0.02)
             pyautogui.press("enter")
-            time.sleep(0.3)
+            time.sleep(1.0)
         except Exception as exc:
-            logger.warning("Fallo al enviar mensaje de seguimiento de validación: %s", exc)
-        time.sleep(0.5)
+            logger.warning("Fallo al enviar mensaje de instrucciÃ³n: %s", exc)
         logger.info("Mensaje enviado correctamente a traves de Teams")
-
-        # Fin del flujo
         logger.info("Flujo de Teams finalizado")
+        return
+
     finally:
         _RUNNING = False
 
 
 def _focus_main_chat_and_bar() -> None:
     """Enfoca el chat principal y la barra de mensajes del chat en Teams."""
-    # Intentar confirmar que Teams está visible (si falla, seguimos y buscamos el chat de todos modos)
+    # Intentar confirmar que Teams estÃ¡ visible (si falla, seguimos y buscamos el chat de todos modos)
     try:
         wait_for_image(
             "teams_header.png",
@@ -324,7 +313,7 @@ def _send_chat_message(text: str) -> None:
 
 
 def _is_any_image_visible(image_names: list[str]) -> bool:
-    """Chequea de forma no bloqueante si alguna de las imágenes está visible en pantalla."""
+    """Chequea de forma no bloqueante si alguna de las imÃ¡genes estÃ¡ visible en pantalla."""
     for name in image_names:
         path = IMAGES_DIR / name
         try:
@@ -351,11 +340,11 @@ def wait_for_ok_confirmations(
 ) -> str:
     """Espera hasta que todos los participantes habilitados confirmen con "ok!".
 
-    La detección se realiza buscando en pantalla las capturas indicadas para cada persona.
-    Envía recordatorios al chat listando las personas que falten después de 10m (configurable)
+    La detecciÃ³n se realiza buscando en pantalla las capturas indicadas para cada persona.
+    EnvÃ­a recordatorios al chat listando las personas que falten despuÃ©s de 10m (configurable)
     y luego repite recordatorios con la periodicidad indicada hasta que todos confirmen.
 
-    También permite controlar el flujo desde el chat con imágenes especiales:
+    TambiÃ©n permite controlar el flujo desde el chat con imÃ¡genes especiales:
     - Forzar avance (continuar aunque falten "ok!")
     - Reiniciar (cancelar y volver a comenzar el paso)
     Devuelve uno de: "ok", "force", "restart".
@@ -393,7 +382,7 @@ def wait_for_ok_confirmations(
     next_reminder_at = start + max(0, int(first_rem))
 
     while pending:
-        # 1) Antes de chequear participantes, ver si se solicitó reinicio o forzar avance
+        # 1) Antes de chequear participantes, ver si se solicitÃ³ reinicio o forzar avance
         try:
             force_forward_visible = _is_any_image_visible([
                 TEAMS_FORCE_FORWARD_MAIN,
@@ -404,15 +393,15 @@ def wait_for_ok_confirmations(
                 TEAMS_RESTARTD_SECONDARY,
             ])
         except Exception as exc:
-            logger.debug("Fallo al chequear imágenes de control de flujo: %s", exc)
+            logger.debug("Fallo al chequear imÃ¡genes de control de flujo: %s", exc)
             force_forward_visible = False
             restart_visible = False
 
         if restart_visible:
-            logger.warning("Se detectó petición de reinicio desde el chat; reiniciando paso.")
+            logger.warning("Se detectÃ³ peticiÃ³n de reinicio desde el chat; reiniciando paso.")
             return "restart"
         if force_forward_visible:
-            logger.warning("Se detectó petición de forzar avance desde el chat; continuando sin esperar más confirmaciones.")
+            logger.warning("Se detectÃ³ peticiÃ³n de forzar avance desde el chat; continuando sin esperar mÃ¡s confirmaciones.")
             return "force"
         # Revisar todos los pendientes
         to_remove: list[str] = []
@@ -425,7 +414,7 @@ def wait_for_ok_confirmations(
                 match = None
 
             if match is not None:
-                logger.info("Confirmación detectada para '%s' (%s)", name, img_name)
+                logger.info("ConfirmaciÃ³n detectada para '%s' (%s)", name, img_name)
                 to_remove.append(name)
 
         for name in to_remove:
@@ -440,7 +429,7 @@ def wait_for_ok_confirmations(
             logger.info("Enviando recordatorio; faltan: %s", missing_names)
             try:
                 _send_chat_message(
-                    f"Por favor validar los jiras: {_format_missing_names(missing_names)}"
+                    f"Por favor, corregir los jiras: {_format_missing_names(missing_names)}"
                 )
             except Exception as exc:
                 logger.warning("No se pudo enviar recordatorio en Teams: %s", exc)
@@ -451,3 +440,6 @@ def wait_for_ok_confirmations(
 
     logger.info("Todos los participantes confirmaron 'ok!'. Continuando.")
     return "ok"
+
+
+
