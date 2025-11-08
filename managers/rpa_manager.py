@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pyautogui
 import pygetwindow as gw
+from enum import Enum
 
 from config import (
     AIP_APIS,
@@ -14,6 +15,7 @@ from config import (
     AIP_TASK2,
     BUILD_VERSION,
     PREVIOUS_BUILD_VERSION,
+    RPA_UI_TARGETS,
 )
 
 DUMMY_VERSION = "1.1.1.1"
@@ -22,11 +24,69 @@ IMAGE_WAIT_TIMEOUT = 45
 IMAGE_WAIT_INTERVAL = 1
 IMAGES_DIR = Path(__file__).resolve().parent.parent / "assets" / "images"
 AIP_TARGETS = (AIP_BACKEND, AIP_FRONTEND, AIP_APIS, AIP_TASK, AIP_TASK2)
+window_title = 'Advanced Installer'
 
-window_title = "Advanced Installer"
 
 logger = logging.getLogger(__name__)
 
+
+class TargetMode(Enum):
+    POINT = "point"
+    IMG = "img"
+
+# Build map for quick lookup from config
+try:
+    _UI_TARGETS_MAP = {item.get("key"): item for item in RPA_UI_TARGETS}
+except Exception:
+    _UI_TARGETS_MAP = {}
+
+
+def _get_target_config(name: str) -> dict:
+    conf = _UI_TARGETS_MAP.get(name)
+    if not conf:
+        raise KeyError(f"UI target '{name}' not found in config.RPA_UI_TARGETS")
+    return conf
+
+
+def _normalize_point(point_px) -> tuple[int, int]:
+    if point_px is None:
+        raise ValueError("point_px is None")
+    # Accept (x,y) tuple/list or {x:.., y:..}
+    if isinstance(point_px, (list, tuple)) and len(point_px) == 2:
+        return int(point_px[0]), int(point_px[1])
+    if isinstance(point_px, dict) and "x" in point_px and "y" in point_px:
+        return int(point_px["x"]), int(point_px["y"])
+    raise ValueError(f"Unsupported point_px format: {point_px!r}")
+
+
+def find_click_point(name: str, *, timeout: int = IMAGE_WAIT_TIMEOUT, interval: int = IMAGE_WAIT_INTERVAL):
+    conf = _get_target_config(name)
+    mode = str(conf.get("mode", "img")).lower()
+    if mode == TargetMode.POINT.value:
+        x, y = _normalize_point(conf.get("point_px"))
+        return x, y
+    # fallback to image mode
+    image_name = conf.get("img_name") or conf.get("image")
+    if not image_name:
+        raise ValueError(f"UI target '{name}' missing 'img_name' for mode=img")
+    match = wait_for_image(image_name, timeout=timeout, interval=interval)
+    center = pyautogui.center(match)
+    return center.x, center.y
+
+
+def ensure_target_ready(name: str, *, timeout: int = IMAGE_WAIT_TIMEOUT, interval: int = IMAGE_WAIT_INTERVAL):
+    conf = _get_target_config(name)
+    mode = str(conf.get("mode", "img")).lower()
+    if mode == TargetMode.IMG.value:
+        # Ensure the image is present; raise TimeoutError on failure
+        wait_for_image(conf.get("img_name"), timeout=timeout, interval=interval)
+    return True
+
+
+def click_ui_target(name: str):
+    x, y = find_click_point(name)
+    pyautogui.click(x, y)
+    time.sleep(1)
 
 def update_aip_versions():
     logger.info("Comenzando actualizacion de versiones AIP")
@@ -101,7 +161,7 @@ def update_aip_version(aip_path, change_three_version):
     pyautogui.press("x")
 
     try:
-        version_field = wait_for_image("version_field.png")
+        ensure_target_ready("version_field")
     except TimeoutError as exc:
         logger.error("No se encontro el campo de version para %s", aip_path)
         raise RuntimeError(f"No se encontro el campo de version para {aip_path}.") from exc
@@ -109,20 +169,20 @@ def update_aip_version(aip_path, change_three_version):
     logger.info("Campo de version localizado para %s", aip_path)
     if change_three_version:
         logger.info("Aplicando version final %s", BUILD_VERSION)
-        apply_version(version_field, BUILD_VERSION)
+        apply_version(BUILD_VERSION)
         regenerate_identification()
-        click_button("product_details_btn.png")
+        click_ui_target("product_details_btn")
     else:
         logger.info(
             "Aplicando version temporal %s antes de regenerar identificacion",
             DUMMY_VERSION,
         )
-        apply_version(version_field, DUMMY_VERSION)
+        apply_version(DUMMY_VERSION)
         regenerate_identification()
-        click_button("product_details_btn.png")
+        click_ui_target("product_details_btn")
 
         try:
-            version_field = wait_for_image("version_field.png")
+            ensure_target_ready("version_field")
         except TimeoutError as exc:
             logger.error("No se pudo volver a localizar el campo de version para %s", aip_path)
             raise RuntimeError(
@@ -130,9 +190,9 @@ def update_aip_version(aip_path, change_three_version):
             ) from exc
 
         logger.info("Aplicando version final %s despues de regenerar identificacion", BUILD_VERSION)
-        apply_version(version_field, BUILD_VERSION)
+        apply_version(BUILD_VERSION)
         regenerate_identification()
-        click_button("product_details_btn.png")
+        click_ui_target("product_details_btn")
 
     logger.info("Guardando y cerrando instalador para %s", aip_path)
     save_and_close()
@@ -231,9 +291,9 @@ def click_button(image_name):
     time.sleep(1)
 
 
-def apply_version(version_field, version):
+def apply_version(version):
     logger.info("Aplicando version '%s'", version)
-    pyautogui.click(pyautogui.center(version_field))
+    click_ui_target("version_field")
     time.sleep(1)
     pyautogui.hotkey("ctrl", "a")
     pyautogui.typewrite(version)
@@ -244,8 +304,8 @@ def apply_version(version_field, version):
 
 def regenerate_identification():
     logger.info("Regenerando identificacion de software")
-    click_button("software_identification_btn.png")
-    click_button("generate_now_btn.png")
+    click_ui_target("software_identification_btn")
+    click_ui_target("generate_now_btn")
     logger.info("Regeneracion de identificacion completada")
 
 
@@ -256,3 +316,9 @@ def save_and_close():
     pyautogui.hotkey("alt", "f4")
     time.sleep(1)
     logger.info("Instalador cerrado correctamente")
+
+
+
+
+
+
