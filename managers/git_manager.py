@@ -98,6 +98,7 @@ def create_and_checkout_build_branch(base_branch: str = MAIN_BRANCH) -> str:
 
     Devuelve el nombre de la nueva rama.
     """
+    # new_branch = 'test_robobuild_1'
     new_branch = _format_build_branch_name(BUILD_VERSION)
 
     logger.info("Creando/moviendo a la rama de build '%s' basada en '%s'", new_branch, base_branch)

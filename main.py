@@ -63,10 +63,10 @@ def _execute_action(action: Accion) -> None:
         case Accion.UPDATE_AIP_VERSIONS:
             rpa_manager.update_aip_versions()
         case Accion.UPLOAD_CODE_AND_PR:
-            build_branch = git_manager.create_and_checkout_build_branch()
-            current_branch = git_manager.commit_and_push_all_changes()
+            # build_branch = git_manager.create_and_checkout_build_branch()
+            # current_branch = git_manager.commit_and_push_all_changes()
             # TODO: validar funcionamiento y reinicio total si es necesario
-            TfsManager().run_pr_pipeline(source_branch=current_branch or build_branch, target_branch=MAIN_BRANCH)
+            TfsManager().run_pr_pipeline(source_branch='test_robobuild_1' or 'test_robobuild_1', target_branch=MAIN_BRANCH)
         case _:
             raise ValueError(f"Accion desconocida: {action}")
 

@@ -82,6 +82,14 @@ class TfsManager:
         self.build_definition_id = int(build_definition_id) if build_definition_id is not None else (
             int(build_def_env) if build_def_env and build_def_env.isdigit() else None
         )
+        # Lista opcional de definiciones para validar PR (coma separada)
+        raw_defs = os.getenv("BUILD_DEFINITION_IDS", "")
+        self.build_definition_ids: List[int] = []
+        if raw_defs.strip():
+            try:
+                self.build_definition_ids = [int(x) for x in raw_defs.replace(";", ",").split(",") if x.strip()]
+            except Exception:
+                logger.warning("No se pudo parsear BUILD_DEFINITION_IDS='%s'", raw_defs)
 
         if not (self.base_url and self.org and self.project and self.pat):
             raise ValueError(
@@ -90,6 +98,12 @@ class TfsManager:
 
         self._auth_header = {"Authorization": f"Basic {_b64_pat(self.pat)}"}
         self._root = f"{self.base_url}/{self.org}/{self.project}"
+
+        # Configurable API versions for on-prem TFS compatibility
+        # Examples: "7.1-preview.1", "6.0", "5.1", "4.1"
+        self.git_api_version = os.getenv("TFS_GIT_API_VERSION", "7.1-preview.1")
+        # Build API examples: "7.1-preview.7", "6.0", "5.1"
+        self.build_api_version = os.getenv("TFS_BUILD_API_VERSION", "7.1-preview.7")
 
         # Últimos IDs conocidos para conveniencia entre llamadas
         self._last_pr_id: Optional[int] = None
@@ -151,7 +165,9 @@ class TfsManager:
         if not repository_id:
             raise ValueError("repo_id es requerido (parámetro o env REPO_ID)")
 
-        url = self._url(f"/_apis/git/repositories/{repository_id}/pullrequests?api-version=7.1-preview.1")
+        url = self._url(
+            f"/_apis/git/repositories/{repository_id}/pullRequests?api-version={self.git_api_version}"
+        )
         payload: Dict[str, Any] = {
             "sourceRefName": f"refs/heads/{source_branch}",
             "targetRefName": f"refs/heads/{target_branch}",
@@ -205,7 +221,7 @@ class TfsManager:
         if not def_id:
             raise ValueError("definition_id es requerido (parámetro o env BUILD_DEFINITION_ID)")
 
-        url = self._url("/_apis/build/builds?api-version=7.1-preview.7")
+        url = self._url(f"/_apis/build/builds?api-version={self.build_api_version}")
         body: Dict[str, Any] = {
             "definition": {"id": def_id},
             "sourceBranch": f"refs/pull/{pr_id}/merge",
@@ -219,11 +235,17 @@ class TfsManager:
             body["parameters"] = json.dumps(parameters)
 
         logger.info("Encolando build para PR %s (definition %s)", pr_id, def_id)
+        logger.debug("POST %s", url)
         resp = self._request("POST", url, data=json.dumps(body))
         data = resp.json()
         build_id = int(data.get("id"))
         self._last_build_id = build_id
         logger.info("Build encolada: ID=%s", build_id)
+        try:
+            build_ui = f"{self.base_url}/{self.org}/{self.project}/_build/results?buildId={build_id}"
+            logger.info("Build URL: %s", build_ui)
+        except Exception:
+            pass
         return build_id
 
     def wait_for_build(
@@ -248,7 +270,7 @@ class TfsManager:
         """
         interval = poll_interval or self.poll_interval
         timeout = timeout_secs or self.timeout_secs
-        url = self._url(f"/_apis/build/builds/{build_id}?api-version=7.1-preview.7")
+        url = self._url(f"/_apis/build/builds/{build_id}?api-version={self.build_api_version}")
 
         logger.info("Esperando build %s hasta completar...", build_id)
         start = time.time()
@@ -290,7 +312,7 @@ class TfsManager:
             raise ValueError("repo_id es requerido (parámetro o env REPO_ID)")
 
         url = self._url(
-            f"/_apis/git/repositories/{repository_id}/pullRequests/{pr_id}/reviewers?api-version=7.1-preview.1"
+            f"/_apis/git/repositories/{repository_id}/pullRequests/{pr_id}/reviewers?api-version={self.git_api_version}"
         )
         resp = self._request("GET", url)
         data = resp.json()
@@ -306,6 +328,8 @@ class TfsManager:
         poll_interval: Optional[int] = None,
         timeout_secs: Optional[int] = None,
         required_only: bool = False,
+        min_approvals: int = 1,
+        require_all_required: bool = False,
     ) -> List[Dict[str, Any]]:
         """Espera hasta que todos los revisores requeridos aprueben, o alguno rechace.
 
@@ -333,7 +357,12 @@ class TfsManager:
         interval = poll_interval or self.poll_interval
         timeout = timeout_secs or self.timeout_secs
 
-        logger.info("Esperando aprobaciones de revisores para PR %s...", pr_id)
+        logger.info(
+            "Esperando aprobaciones (min=%s, required_only=%s) para PR %s...",
+            min_approvals,
+            required_only,
+            pr_id,
+        )
         start = time.time()
         while True:
             reviewers = self.get_reviewers(repository_id, pr_id)
@@ -341,20 +370,223 @@ class TfsManager:
             # Filtrar revisores requeridos si se solicitó
             considered = [r for r in reviewers if (not required_only) or r.get("isRequired")]
             if not considered and required_only:
-                logger.info("No hay revisores requeridos; consideramos todos los revisores")
+                logger.info("No hay revisores marcados como 'requeridos'; consideramos todos")
                 considered = reviewers
 
             # Evaluar votos
             votes = [int(r.get("vote", 0) or 0) for r in considered]
             if any(v <= -10 for v in votes):
-                raise TfsApiError("Un revisor rechazo el PR (vote <= -10)")
+                raise TfsApiError("Un revisor rechazó el PR (vote <= -10)")
 
-            if considered and all(v >= 5 for v in votes):
-                logger.info("Todos los revisores han aprobado el PR")
+            approvals = sum(1 for v in votes if v >= 5)
+            all_required_ok = all(int(r.get("vote", 0) or 0) >= 5 for r in reviewers if r.get("isRequired"))
+
+            # Condición de salida: mínimo de aprobaciones y, si se pide, todos los requeridos aprobados
+            if approvals >= max(1, int(min_approvals)) and (not require_all_required or all_required_ok):
+                logger.info("Aprobaciones suficientes (%s) alcanzadas", approvals)
                 return reviewers
 
             if time.time() - start > timeout:
                 raise TfsApiError(f"Timeout esperando revisiones del PR {pr_id} tras {timeout}s")
+
+            time.sleep(interval)
+
+    def wait_for_build_and_reviews(
+        self,
+        *,
+        pr_id: int,
+        build_id: int,
+        repo_id: Optional[str] = None,
+        poll_interval: Optional[int] = None,
+        timeout_secs: Optional[int] = None,
+        min_approvals: int = 2,
+        required_only: bool = False,
+        require_all_required: bool = False,
+    ) -> Dict[str, Any]:
+        """Espera a que la build termine OK y se alcancen las aprobaciones requeridas.
+
+        Retorna el JSON final de la build.
+        """
+        interval = poll_interval or self.poll_interval
+        timeout = timeout_secs or self.timeout_secs
+
+        repository_id = repo_id or self.repo_id
+        if not repository_id:
+            raise ValueError("repo_id es requerido (parámetro o env REPO_ID)")
+
+        build_url = self._url(f"/_apis/build/builds/{build_id}?api-version={self.build_api_version}")
+        start = time.time()
+        last_build_status = None
+        build_done_ok = False
+        final_build_json: Dict[str, Any] = {}
+
+        logger.info(
+            "Esperando build %s y aprobaciones (min=%s) del PR %s...",
+            build_id,
+            min_approvals,
+            pr_id,
+        )
+
+        while True:
+            # Build status
+            resp = self._request("GET", build_url)
+            data = resp.json()
+            status = data.get("status")
+            result = data.get("result")
+            if status != last_build_status:
+                logger.info("Estado build %s: %s", build_id, status)
+                last_build_status = status
+            if status == "completed":
+                if result != "succeeded":
+                    raise TfsApiError(f"Build {build_id} finalizada con estado: {result}")
+                build_done_ok = True
+                final_build_json = data
+
+            # Reviews status
+            reviewers = self.get_reviewers(repository_id, pr_id)
+            considered = [r for r in reviewers if (not required_only) or r.get("isRequired")]
+            if not considered and required_only:
+                considered = reviewers
+            votes = [int(r.get("vote", 0) or 0) for r in considered]
+            if any(v <= -10 for v in votes):
+                raise TfsApiError("Un revisor rechazó el PR (vote <= -10)")
+            approvals = sum(1 for v in votes if v >= 5)
+            all_required_ok = all(int(r.get("vote", 0) or 0) >= 5 for r in reviewers if r.get("isRequired"))
+            reviews_ok = approvals >= max(1, int(min_approvals)) and (not require_all_required or all_required_ok)
+
+            # Log de progreso cada ciclo (alineado al poll_interval)
+            try:
+                names_approved = [
+                    (r.get("displayName") or r.get("uniqueName") or r.get("id") or "?")
+                    for r in considered
+                    if int(r.get("vote", 0) or 0) >= 5
+                ]
+                names_pending = [
+                    (r.get("displayName") or r.get("uniqueName") or r.get("id") or "?")
+                    for r in considered
+                    if int(r.get("vote", 0) or 0) < 5
+                ]
+                logger.info(
+                    "Progreso -> Build: %s%s; Aprobaciones: %s/%s (OK: %s | Pend: %s)",
+                    status,
+                    (f"/{result}" if status == "completed" else ""),
+                    approvals,
+                    max(1, int(min_approvals)),
+                    ", ".join(map(str, names_approved)) or "-",
+                    ", ".join(map(str, names_pending)) or "-",
+                )
+            except Exception:
+                pass
+
+            if build_done_ok and reviews_ok:
+                logger.info("Build OK y aprobaciones suficientes alcanzadas")
+                return final_build_json
+
+            if timeout and time.time() - start > timeout:
+                raise TfsApiError(
+                    f"Timeout esperando build {build_id} y aprobaciones del PR {pr_id} tras {timeout}s"
+                )
+
+            time.sleep(interval)
+
+    def wait_for_builds_and_reviews(
+        self,
+        *,
+        pr_id: int,
+        build_ids: List[int],
+        repo_id: Optional[str] = None,
+        poll_interval: Optional[int] = None,
+        timeout_secs: Optional[int] = None,
+        min_approvals: int = 2,
+        required_only: bool = False,
+        require_all_required: bool = False,
+    ) -> Dict[str, Any]:
+        """Espera a que TODAS las builds terminen OK y se alcancen las aprobaciones requeridas.
+
+        Retorna el JSON de la última build completada.
+        """
+        interval = poll_interval or self.poll_interval
+        timeout = timeout_secs or self.timeout_secs
+
+        repository_id = repo_id or self.repo_id
+        if not repository_id:
+            raise ValueError("repo_id es requerido (parámetro o env REPO_ID)")
+
+        build_urls = {b: self._url(f"/_apis/build/builds/{b}?api-version={self.build_api_version}") for b in build_ids}
+        start = time.time()
+        last_status: Dict[int, Optional[str]] = {b: None for b in build_ids}
+        builds_ok: Dict[int, bool] = {b: False for b in build_ids}
+        final_build_json: Dict[str, Any] = {}
+
+        logger.info(
+            "Esperando builds %s y aprobaciones (min=%s) del PR %s...",
+            ",".join(str(b) for b in build_ids),
+            min_approvals,
+            pr_id,
+        )
+
+        while True:
+            # Estado de todas las builds
+            for b_id, url in build_urls.items():
+                resp = self._request("GET", url)
+                data = resp.json()
+                status = data.get("status")
+                result = data.get("result")
+                if status != last_status[b_id]:
+                    logger.info("Estado build %s: %s", b_id, status)
+                    last_status[b_id] = status
+                if status == "completed":
+                    if result != "succeeded":
+                        raise TfsApiError(f"Build {b_id} finalizada con estado: {result}")
+                    builds_ok[b_id] = True
+                    final_build_json = data
+
+            # Estado de revisiones
+            reviewers = self.get_reviewers(repository_id, pr_id)
+            considered = [r for r in reviewers if (not required_only) or r.get("isRequired")]
+            if not considered and required_only:
+                considered = reviewers
+            votes = [int(r.get("vote", 0) or 0) for r in considered]
+            if any(v <= -10 for v in votes):
+                raise TfsApiError("Un revisor rechazó el PR (vote <= -10)")
+            approvals = sum(1 for v in votes if v >= 5)
+            all_required_ok = all(int(r.get("vote", 0) or 0) >= 5 for r in reviewers if r.get("isRequired"))
+            reviews_ok = approvals >= max(1, int(min_approvals)) and (not require_all_required or all_required_ok)
+
+            # Log de progreso por ciclo
+            try:
+                names_approved = [
+                    (r.get("displayName") or r.get("uniqueName") or r.get("id") or "?")
+                    for r in considered
+                    if int(r.get("vote", 0) or 0) >= 5
+                ]
+                names_pending = [
+                    (r.get("displayName") or r.get("uniqueName") or r.get("id") or "?")
+                    for r in considered
+                    if int(r.get("vote", 0) or 0) < 5
+                ]
+                builds_state = ", ".join(
+                    f"{b}:{('OK' if ok else (last_status[b] or '?'))}" for b, ok in builds_ok.items()
+                )
+                logger.info(
+                    "Progreso -> Builds: %s; Aprobaciones: %s/%s (OK: %s | Pend: %s)",
+                    builds_state,
+                    approvals,
+                    max(1, int(min_approvals)),
+                    ", ".join(map(str, names_approved)) or "-",
+                    ", ".join(map(str, names_pending)) or "-",
+                )
+            except Exception:
+                pass
+
+            if all(builds_ok.values()) and reviews_ok:
+                logger.info("Builds OK y aprobaciones suficientes alcanzadas")
+                return final_build_json
+
+            if timeout and time.time() - start > timeout:
+                raise TfsApiError(
+                    f"Timeout esperando builds {','.join(str(b) for b in build_ids)} y aprobaciones del PR {pr_id} tras {timeout}s"
+                )
 
             time.sleep(interval)
 
@@ -382,7 +614,9 @@ class TfsManager:
         if not repository_id:
             raise ValueError("repo_id es requerido (parámetro o env REPO_ID)")
 
-        url = self._url(f"/_apis/git/repositories/{repository_id}/pullrequests/{pr_id}?api-version=7.1-preview.1")
+        url = self._url(
+            f"/_apis/git/repositories/{repository_id}/pullRequests/{pr_id}?api-version={self.git_api_version}"
+        )
         payload = {
             "status": "completed",
             "completionOptions": {
@@ -436,7 +670,32 @@ class TfsManager:
             reviewers=None,
         )
 
-        build_id = self.queue_build(pr_id, repo_id=repo_id, definition_id=definition_id)
-        self.wait_for_build(build_id)
-        self.wait_for_reviews(pr_id, repo_id=repo_id)
+        # Determinar definiciones a ejecutar
+        if definition_id is not None:
+            def_ids = [int(definition_id)]
+        elif self.build_definition_ids:
+            def_ids = self.build_definition_ids
+        elif self.build_definition_id:
+            def_ids = [int(self.build_definition_id)]
+        else:
+            raise ValueError("definition_id es requerido (parámetro, BUILD_DEFINITION_ID o BUILD_DEFINITION_IDS)")
+
+        build_ids: List[int] = []
+        for def_id in def_ids:
+            try:
+                b_id = self.queue_build(pr_id, repo_id=repo_id, definition_id=def_id)
+                build_ids.append(b_id)
+            except Exception as exc:
+                logger.exception("Fallo al encolar build para definicion %s: %s", def_id, exc)
+                raise
+
+        # Esperar todas las builds OK y aprobaciones mínimas en un mismo ciclo
+        self.wait_for_builds_and_reviews(
+            pr_id=pr_id,
+            build_ids=build_ids,
+            repo_id=repo_id,
+            min_approvals=2,
+            required_only=False,
+            require_all_required=False,
+        )
         return self.complete_pull_request(pr_id, repo_id=repo_id)
