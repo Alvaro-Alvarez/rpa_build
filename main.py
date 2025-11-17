@@ -1,11 +1,20 @@
 ﻿import logging
 import sys
+from datetime import datetime
+from pathlib import Path
 from typing import Iterable
 
 from enums.enums import Accion
 from managers import file_manager, git_manager, ia_manager, jira_manager, rpa_manager
 from managers.tfs_manager import TfsManager
-from config import MAIN_BRANCH, TEAMS_CONFIRMATION_PARTICIPANTS, get_enabled_codes, get_code_config
+from config import (
+    BUILDS_PACKAGE_DIRECTORY,
+    BUILDS_PACKAGE_FOLDERS,
+    MAIN_BRANCH,
+    TEAMS_CONFIRMATION_PARTICIPANTS,
+    get_code_config,
+    get_enabled_codes,
+)
 from logging_config import setup_logging
 from managers.teams_manager import open_teams_and_send_message, wait_for_ok_confirmations
 
@@ -99,6 +108,15 @@ def _execute_action(action: Accion) -> None:
                 )
                 tm.run_pr_pipeline(source_branch=branch, target_branch=conf.get("main_branch", MAIN_BRANCH), repo_id=str(tfs.get("REPO_ID") or ""))
             # TfsManager().run_pr_pipeline(source_branch='test_robobuild_1' or 'test_robobuild_1', target_branch=MAIN_BRANCH)
+        case Accion.BUILD_PACKAGE:
+            today_folder_name = datetime.now().strftime("%Y%m%d")
+            package_root = Path(BUILDS_PACKAGE_DIRECTORY) / today_folder_name
+            logger.info("Creando estructura de build package en %s", package_root)
+            package_root.mkdir(parents=True, exist_ok=True)
+            for folder_name in BUILDS_PACKAGE_FOLDERS:
+                target_folder = package_root / folder_name
+                target_folder.mkdir(parents=True, exist_ok=True)
+                logger.debug("Carpeta creada/asegurada: %s", target_folder)
         case _:
             raise ValueError(f"Accion desconocida: {action}")
 
