@@ -3,30 +3,25 @@ import logging
 from pathlib import Path
 
 from config import (
-    ASSEMBLY_INFO_API_REST,
-    ASSEMBLY_INFO_EXECUTOR_SER,
-    ASSEMBLY_INFO_ORCHESTRATOR,
-    ASSEMBLY_INFO_TASK_SCHEDULER_SERVICE,
     BUILD_VERSION,
-    CHANGE_LOG_PATH,
-    GLOBAL_ASSEMBLY_INFO_BACKEND,
-    GLOBAL_ASSEMBLY_INFO_FRONTEND,
-JSON_NAME,
-PREVIOUS_BUILD_VERSION,
+    JSON_NAME,
+    PREVIOUS_BUILD_VERSION,
+    get_enabled_codes,
+    get_changelog_path,
 )
 
 CHANGE_LOG_READ_ENCODING = "utf-8-sig"
 CHANGE_LOG_WRITE_ENCODING = "utf-8"
 ISSUES_ENCODING = "utf-8"
 ASSEMBLY_ENCODING = "utf-8"
-ASSEMBLY_PATHS = (
-    GLOBAL_ASSEMBLY_INFO_BACKEND,
-    GLOBAL_ASSEMBLY_INFO_FRONTEND,
-    ASSEMBLY_INFO_API_REST,
-    ASSEMBLY_INFO_EXECUTOR_SER,
-    ASSEMBLY_INFO_ORCHESTRATOR,
-    ASSEMBLY_INFO_TASK_SCHEDULER_SERVICE,
-)
+
+def _collect_assembly_paths() -> tuple[str, ...]:
+    paths: list[str] = []
+    for _name, conf in get_enabled_codes():
+        paths.extend(conf.get("assembly_paths") or [])
+    return tuple(paths)
+
+ASSEMBLY_PATHS = _collect_assembly_paths()
 ROOT_DIR = Path(__file__).resolve().parent.parent
 JSON_PATH = ROOT_DIR / JSON_NAME
 
@@ -34,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 def update_change_log():
-    logger.info("Actualizando change log desde '%s' con issues de '%s'", CHANGE_LOG_PATH, JSON_NAME)
+    change_log_path = get_changelog_path()
+    logger.info("Actualizando change log desde '%s' con issues de '%s'", change_log_path, JSON_NAME)
     issues_json = _read_json(JSON_PATH, encoding=ISSUES_ENCODING)
-    change_log_json = _read_json(Path(CHANGE_LOG_PATH), encoding=CHANGE_LOG_READ_ENCODING)
+    change_log_json = _read_json(Path(change_log_path), encoding=CHANGE_LOG_READ_ENCODING)
 
     changelog_data = change_log_json.get("changelogData")
     if not isinstance(changelog_data, list):
@@ -45,7 +41,7 @@ def update_change_log():
 
     logger.info("Insertando nueva entrada en el change log")
     changelog_data.insert(0, issues_json)
-    _write_json(Path(CHANGE_LOG_PATH), change_log_json, encoding=CHANGE_LOG_WRITE_ENCODING)
+    _write_json(Path(change_log_path), change_log_json, encoding=CHANGE_LOG_WRITE_ENCODING)
     logger.info("Change log actualizado correctamente")
 
 

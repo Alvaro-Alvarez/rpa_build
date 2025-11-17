@@ -8,14 +8,10 @@ import pygetwindow as gw
 from enum import Enum
 
 from config import (
-    AIP_APIS,
-    AIP_BACKEND,
-    AIP_FRONTEND,
-    AIP_TASK,
-    AIP_TASK2,
     BUILD_VERSION,
     PREVIOUS_BUILD_VERSION,
     RPA_UI_TARGETS,
+    get_enabled_codes,
 )
 
 DUMMY_VERSION = "1.1.1.1"
@@ -23,7 +19,13 @@ IMAGE_CONFIDENCE = 0.8
 IMAGE_WAIT_TIMEOUT = 45
 IMAGE_WAIT_INTERVAL = 1
 IMAGES_DIR = Path(__file__).resolve().parent.parent / "assets" / "images"
-AIP_TARGETS = (AIP_BACKEND, AIP_FRONTEND, AIP_APIS, AIP_TASK, AIP_TASK2)
+def _collect_aip_targets() -> tuple[str, ...]:
+    paths: list[str] = []
+    for _name, conf in get_enabled_codes():
+        paths.extend(conf.get("aip_paths") or [])
+    return tuple(paths)
+
+AIP_TARGETS = _collect_aip_targets()
 window_title = 'Advanced Installer'
 
 

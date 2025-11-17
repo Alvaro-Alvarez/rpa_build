@@ -17,8 +17,8 @@ from config import (
     JSON_NAME,
     XLXS_NAME,
     JIRA_VALIDATE_TAGS,
-    CHANGE_LOG_PATH,
     TEAMS_CONFIRMATION_PARTICIPANTS,
+    get_changelog_path,
 )
 
 JIRA_SEARCH_ENDPOINT = "/rest/api/3/search/jql"
@@ -228,9 +228,9 @@ def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[d
     fix_two = ".".join(vparts[:3])
     fix_three = ".".join(vparts[:4])
 
-    # Fecha del Ãºltimo build desde CHANGE_LOG_PATH (posiciÃ³n 0)
+    # Fecha del último build desde el change log (posición 0))
     try:
-        cl_path = Path(CHANGE_LOG_PATH)
+        cl_path = Path(get_changelog_path())
         with cl_path.open("r", encoding="utf-8") as f:
             content = json.load(f)
         last_build_date_raw = (content.get("changelogData") or [{}])[0].get("versionDate") or ""
@@ -238,7 +238,7 @@ def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[d
         last_build_date = _to_ymd(last_build_date_raw)
     except Exception:
         logger.exception(
-            "No se pudo leer versionDate[0] desde CHANGE_LOG_PATH=%s", CHANGE_LOG_PATH
+            "No se pudo leer versionDate[0] desde el change log: %s", get_changelog_path()
         )
         return []
 
@@ -315,3 +315,4 @@ def _to_ymd(date_str: str) -> str:
             pass
     # fallback: devolver original
     return s
+

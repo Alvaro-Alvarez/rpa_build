@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Sequence
 from urllib.parse import quote
 
-from config import C2IS_CODE_PATH, MAIN_BRANCH, BUILD_VERSION
+from config import MAIN_BRANCH, BUILD_VERSION, get_code_config
 
 GIT_EXECUTABLE = "git"
 
@@ -16,33 +16,59 @@ class GitCommandError(RuntimeError):
 
 
 def process_code_branch():
-    logger.info("Obteniendo rama actual del repositorio Git en %s", C2IS_CODE_PATH)
-    branch = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+    c2is_path = get_code_config("C2IS").get("code_path")
+    logger.info("Obteniendo rama actual del repositorio Git en %s", c2is_path)
+    branch = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"], cwd=c2is_path).stdout.strip()
     logger.info("Rama actual: %s", branch)
     if branch == MAIN_BRANCH:
         logger.info("Ya se esta en la rama objetivo '%s'", MAIN_BRANCH)
         # Asegurarnos de tener los ultimos cambios de remoto
-        run_git_command(["pull"])  # equivale a 'git pull' en la rama actual
+        run_git_command(["pull"], cwd=c2is_path)  # equivale a 'git pull' en la rama actual
         return
 
     logger.info("Se requiere volver a la rama '%s'", MAIN_BRANCH)
     discard_local_changes()
-    run_git_command(["checkout", MAIN_BRANCH])
+    run_git_command(["checkout", MAIN_BRANCH], cwd=c2is_path)
     logger.info("Cambio de rama a '%s' completado", MAIN_BRANCH)
     # Luego de cambiar a main, traer los ultimos cambios remotos
-    run_git_command(["pull"])  # equivale a 'git pull' en la rama actual
+    run_git_command(["pull"], cwd=c2is_path)  # equivale a 'git pull' en la rama actual
     logger.info("Se hace pull en la rama: '%s'", MAIN_BRANCH)
     
 
 
 def discard_local_changes():
-    logger.info("Descartando cambios locales en %s", C2IS_CODE_PATH)
-    run_git_command(["reset", "--hard"])
-    run_git_command(["clean", "-fd"])
+    c2is_path = get_code_config("C2IS").get("code_path")
+    logger.info("Descartando cambios locales en %s", c2is_path)
+    run_git_command(["reset", "--hard"], cwd=c2is_path)
+    run_git_command(["clean", "-fd"], cwd=c2is_path)
     logger.info("Cambios locales descartados")
 
 
-def run_git_command(command: Sequence[str], *, cwd: Path | str = C2IS_CODE_PATH) -> subprocess.CompletedProcess:
+def process_code_branch_for(cwd: Path | str, main_branch: str = MAIN_BRANCH):
+    """Igual que process_code_branch, pero apuntando a un repositorio específico."""
+    logger.info("Obteniendo rama actual del repositorio Git en %s", cwd)
+    branch = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd).stdout.strip()
+    logger.info("Rama actual: %s", branch)
+    if branch == main_branch:
+        logger.info("Ya se esta en la rama objetivo '%s'", main_branch)
+        run_git_command(["pull"], cwd=cwd)
+        return
+    logger.info("Se requiere volver a la rama '%s'", main_branch)
+    discard_local_changes_for(cwd)
+    run_git_command(["checkout", main_branch], cwd=cwd)
+    logger.info("Cambio de rama a '%s' completado", main_branch)
+    run_git_command(["pull"], cwd=cwd)
+    logger.info("Se hace pull en la rama: '%s'", main_branch)
+
+
+def discard_local_changes_for(cwd: Path | str):
+    logger.info("Descartando cambios locales en %s", cwd)
+    run_git_command(["reset", "--hard"], cwd=cwd)
+    run_git_command(["clean", "-fd"], cwd=cwd)
+    logger.info("Cambios locales descartados en %s", cwd)
+
+
+def run_git_command(command: Sequence[str], *, cwd: Path | str) -> subprocess.CompletedProcess:
     logger.info("Ejecutando comando Git: %s", " ".join([GIT_EXECUTABLE, *command]))
     process = subprocess.run(
         [GIT_EXECUTABLE, *command],
@@ -65,19 +91,19 @@ def _format_build_branch_name(version: str = BUILD_VERSION) -> str:
     return f"build_{version.replace('.', '_')}"
 
 
-def _get_current_branch() -> str:
-    return run_git_command(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+def _get_current_branch(cwd: Path | str) -> str:
+    return run_git_command(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd).stdout.strip()
 
 
-def _get_remote_url(remote: str = "origin") -> str:
-    return run_git_command(["remote", "get-url", remote]).stdout.strip()
+def _get_remote_url(cwd: Path | str, remote: str = "origin") -> str:
+    return run_git_command(["remote", "get-url", remote], cwd=cwd).stdout.strip()
 
 
-def _run_external(command: Sequence[str]) -> subprocess.CompletedProcess:
+def _run_external(command: Sequence[str], *, cwd: Path | str | None = None) -> subprocess.CompletedProcess:
     logger.info("Ejecutando comando externo: %s", " ".join(command))
     process = subprocess.run(
         list(command),
-        cwd=C2IS_CODE_PATH,
+        cwd=cwd or get_code_config("C2IS").get("code_path"),
         capture_output=True,
         text=True,
         check=False,
@@ -104,19 +130,36 @@ def create_and_checkout_build_branch(base_branch: str = MAIN_BRANCH) -> str:
     logger.info("Creando/moviendo a la rama de build '%s' basada en '%s'", new_branch, base_branch)
 
     # Asegurar que la rama base existe localmente
-    run_git_command(["fetch", "--all", "--prune"])  # no falla si no hay remotos
+    c2is_path = get_code_config("C2IS").get("code_path")
+    run_git_command(["fetch", "--all", "--prune"], cwd=c2is_path)  # no falla si no hay remotos
 
     # Si la rama ya existe, solo cambiamos. Si no, la creamos desde base_branch.
     try:
-        run_git_command(["rev-parse", "--verify", new_branch])
+        run_git_command(["rev-parse", "--verify", new_branch], cwd=c2is_path)
         logger.info("La rama '%s' ya existe localmente. Haciendo checkout...", new_branch)
-        run_git_command(["checkout", new_branch])
+        run_git_command(["checkout", new_branch], cwd=c2is_path)
     except GitCommandError:
         # Cambiar a base_branch para tener una referencia consistente al crear
-        run_git_command(["checkout", base_branch])
+        run_git_command(["checkout", base_branch], cwd=c2is_path)
         # Crear nueva rama desde base_branch
-        run_git_command(["checkout", "-b", new_branch, base_branch])
+        run_git_command(["checkout", "-b", new_branch, base_branch], cwd=c2is_path)
     logger.info("Cambio de rama a '%s' completado", new_branch)
+    return new_branch
+
+
+def create_and_checkout_build_branch_for(cwd: Path | str, base_branch: str = MAIN_BRANCH) -> str:
+    """Crea y hace checkout a la rama de build en el repo indicado por 'cwd'."""
+    new_branch = _format_build_branch_name(BUILD_VERSION)
+    logger.info("Creando/moviendo a la rama de build '%s' basada en '%s' en %s", new_branch, base_branch, cwd)
+    run_git_command(["fetch", "--all", "--prune"], cwd=cwd)
+    try:
+        run_git_command(["rev-parse", "--verify", new_branch], cwd=cwd)
+        logger.info("La rama '%s' ya existe localmente. Haciendo checkout...", new_branch)
+        run_git_command(["checkout", new_branch], cwd=cwd)
+    except GitCommandError:
+        run_git_command(["checkout", base_branch], cwd=cwd)
+        run_git_command(["checkout", "-b", new_branch, base_branch], cwd=cwd)
+    logger.info("Cambio de rama a '%s' completado en %s", new_branch, cwd)
     return new_branch
 
 
@@ -128,27 +171,53 @@ def commit_and_push_all_changes(commit_message: str | None = None, remote: str =
 
     Devuelve el nombre de la rama actual.
     """
-    branch = _get_current_branch()
+    c2is_path = get_code_config("C2IS").get("code_path")
+    branch = _get_current_branch(c2is_path)
     logger.info("Preparando commit de cambios en la rama '%s'", branch)
 
-    status = run_git_command(["status", "--porcelain"]).stdout.strip()
+    status = run_git_command(["status", "--porcelain"], cwd=c2is_path).stdout.strip()
     if status:
-        run_git_command(["add", "-A"])
+        run_git_command(["add", "-A"], cwd=c2is_path)
         message = commit_message or f"chore(build): publicar cambios para {BUILD_VERSION}"
-        run_git_command(["commit", "-m", message])
+        run_git_command(["commit", "-m", message], cwd=c2is_path)
         logger.info("Commit realizado: %s", message)
     else:
         logger.info("No hay cambios pendientes para commitear")
 
     # Push con upstream
     try:
-        run_git_command(["push", "-u", remote, branch])
+        run_git_command(["push", "-u", remote, branch], cwd=c2is_path)
     except GitCommandError as e:
         # Si ya tiene upstream, intentar push simple
         logger.info("Fallo push con upstream. Intentando 'git push' simple: %s", e)
-        run_git_command(["push"])
+        run_git_command(["push"], cwd=c2is_path)
 
     logger.info("Push realizado a '%s/%s'", remote, branch)
+    return branch
+
+
+def commit_and_push_all_changes_for(
+    cwd: Path | str,
+    commit_message: str | None = None,
+    remote: str = "origin",
+) -> str:
+    """Agrega, commitea y hace push de cambios en el repo indicado por 'cwd'."""
+    branch = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd).stdout.strip()
+    logger.info("Preparando commit de cambios en la rama '%s' (%s)", branch, cwd)
+    status = run_git_command(["status", "--porcelain"], cwd=cwd).stdout.strip()
+    if status:
+        run_git_command(["add", "-A"], cwd=cwd)
+        message = commit_message or f"chore(build): publicar cambios para {BUILD_VERSION}"
+        run_git_command(["commit", "-m", message], cwd=cwd)
+        logger.info("Commit realizado: %s", message)
+    else:
+        logger.info("No hay cambios pendientes para commitear en %s", cwd)
+    try:
+        run_git_command(["push", "-u", remote, branch], cwd=cwd)
+    except GitCommandError as e:
+        logger.info("Fallo push con upstream. Intentando 'git push' simple en %s: %s", cwd, e)
+        run_git_command(["push"], cwd=cwd)
+    logger.info("Push realizado a '%s/%s' (%s)", remote, branch, cwd)
     return branch
 
 
@@ -157,11 +226,12 @@ def create_pull_request_to_main(title: str | None = None, body: str | None = Non
 
     Construye y devuelve la URL de creación de PR en TFS (on‑prem) basada en el remoto.
     """
-    source_branch = _get_current_branch()
+    c2is_path = get_code_config("C2IS").get("code_path")
+    source_branch = _get_current_branch(c2is_path)
     if source_branch == MAIN_BRANCH:
         raise GitCommandError("No se puede crear PR desde la rama principal hacia sí misma")
 
-    remote_url = _get_remote_url(remote)
+    remote_url = _get_remote_url(c2is_path, remote)
     logger.info("Construyendo URL de creación de PR para TFS...")
     pr_url = _build_pr_url(remote_url, source_branch, MAIN_BRANCH)
     logger.info("Cree el PR manualmente en: %s", pr_url)

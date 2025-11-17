@@ -5,7 +5,7 @@ from typing import Iterable
 from enums.enums import Accion
 from managers import file_manager, git_manager, ia_manager, jira_manager, rpa_manager
 from managers.tfs_manager import TfsManager
-from config import MAIN_BRANCH, TEAMS_CONFIRMATION_PARTICIPANTS
+from config import MAIN_BRANCH, TEAMS_CONFIRMATION_PARTICIPANTS, get_enabled_codes, get_code_config
 from logging_config import setup_logging
 from managers.teams_manager import open_teams_and_send_message, wait_for_ok_confirmations
 
@@ -56,17 +56,48 @@ def _execute_action(action: Accion) -> None:
                 logger.error("Validacion de JSON fallo")
                 raise ValueError("El json de issues de jira no esta bien formateado.")
         case Accion.UPDATE_CHANGE_LOG:
-            git_manager.process_code_branch()
+            # Asegurar que C2IS (único que modifica change log) esté en main
+            c2is_path = get_code_config("C2IS").get("code_path")
+            git_manager.process_code_branch_for(c2is_path, MAIN_BRANCH)
             file_manager.update_change_log()
         case Accion.UPDATE_ASSEMBLY_VERSIONS:
+            # Asegurar rama main en cada código habilitado antes de modificar archivos
+            for _name, conf in get_enabled_codes():
+                git_manager.process_code_branch_for(conf.get("code_path"), conf.get("main_branch", MAIN_BRANCH))
             file_manager.update_assembly_versions()
         case Accion.UPDATE_AIP_VERSIONS:
+            # Asegurar rama main en cada código habilitado antes de modificar archivos
+            for _name, conf in get_enabled_codes():
+                git_manager.process_code_branch_for(conf.get("code_path"), conf.get("main_branch", MAIN_BRANCH))
             rpa_manager.update_aip_versions()
         case Accion.UPLOAD_CODE_AND_PR:
-            build_branch = git_manager.create_and_checkout_build_branch()
-            current_branch = git_manager.commit_and_push_all_changes()
-            # TODO: validar funcionamiento y reinicio total si es necesario
-            TfsManager().run_pr_pipeline(source_branch=current_branch or build_branch, target_branch=MAIN_BRANCH)
+            # Crear rama, commitear, pushear y generar PR para todos los códigos habilitados
+            import os
+            branches: list[tuple[str, dict, str]] = []  # (code_name, conf, branch)
+            for code_name, conf in get_enabled_codes():
+                code_path = conf.get("code_path")
+                base_branch = conf.get("main_branch", MAIN_BRANCH)
+                git_manager.process_code_branch_for(code_path, base_branch)
+                build_branch = git_manager.create_and_checkout_build_branch_for(code_path, base_branch)
+                current_branch = git_manager.commit_and_push_all_changes_for(code_path)
+                branches.append((code_name, conf, current_branch or build_branch))
+
+            for code_name, conf, branch in branches:
+                tfs = (conf.get("tfs") or {}).copy()
+                # Preparar variables por código
+                if tfs.get("BUILD_DEFINITION_IDS"):
+                    os.environ["BUILD_DEFINITION_IDS"] = str(tfs.get("BUILD_DEFINITION_IDS"))
+                elif tfs.get("BUILD_DEFINITION_ID") is not None:
+                    os.environ["BUILD_DEFINITION_ID"] = str(tfs.get("BUILD_DEFINITION_ID"))
+                # Instanciar gestor con parámetros específicos
+                tm = TfsManager(
+                    org=str(tfs.get("ORG") or ""),
+                    project=str(tfs.get("PROJECT") or ""),
+                    pat=str(tfs.get("PAT") or ""),
+                    base_url=str(tfs.get("BASE_URL") or ""),
+                    repo_id=str(tfs.get("REPO_ID") or ""),
+                )
+                tm.run_pr_pipeline(source_branch=branch, target_branch=conf.get("main_branch", MAIN_BRANCH), repo_id=str(tfs.get("REPO_ID") or ""))
             # TfsManager().run_pr_pipeline(source_branch='test_robobuild_1' or 'test_robobuild_1', target_branch=MAIN_BRANCH)
         case _:
             raise ValueError(f"Accion desconocida: {action}")

@@ -6,3 +6,4 @@ class Accion(Enum):
     UPDATE_ASSEMBLY_VERSIONS = "update_assembly_versions"
     UPDATE_AIP_VERSIONS = "update_aip_versions"
     UPLOAD_CODE_AND_PR = "upload_code_and_pr"
+    BUILD_PACKAGE = "build_package"
