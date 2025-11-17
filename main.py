@@ -1,4 +1,5 @@
 ﻿import logging
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -8,9 +9,13 @@ from enums.enums import Accion
 from managers import file_manager, git_manager, ia_manager, jira_manager, rpa_manager
 from managers.tfs_manager import TfsManager
 from config import (
+    BUILD_CCSI_DIRECTORY,
     BUILDS_PACKAGE_DIRECTORY,
     BUILDS_PACKAGE_FOLDERS,
+    CCSI_COMMON_ENABLED,
+    CURRENT_VERSION_CCSI,
     MAIN_BRANCH,
+    NEXT_VERSION_CCSI,
     TEAMS_CONFIRMATION_PARTICIPANTS,
     get_code_config,
     get_enabled_codes,
@@ -19,6 +24,32 @@ from logging_config import setup_logging
 from managers.teams_manager import open_teams_and_send_message, wait_for_ok_confirmations
 
 logger = logging.getLogger(__name__)
+
+
+def _powershell_escape(path: Path) -> str:
+    """Escapa rutas para ser utilizadas en strings de PowerShell."""
+    return str(path).replace("'", "''")
+
+
+def _create_shortcut(shortcut_path: Path, target_path: Path) -> None:
+    """Crea o reemplaza un acceso directo de Windows apuntando a target_path."""
+    shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+    shortcut_path.unlink(missing_ok=True)
+    command = (
+        "$WshShell = New-Object -ComObject WScript.Shell; "
+        f"$Shortcut = $WshShell.CreateShortcut('{_powershell_escape(shortcut_path)}'); "
+        f"$Shortcut.TargetPath = '{_powershell_escape(target_path)}'; "
+        "$Shortcut.Save();"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Error creando acceso directo {shortcut_path}: {result.stderr.strip() or result.stdout.strip()}"
+        )
 
 
 def start_building(actions: Iterable[Accion]) -> None:
@@ -117,6 +148,20 @@ def _execute_action(action: Accion) -> None:
                 target_folder = package_root / folder_name
                 target_folder.mkdir(parents=True, exist_ok=True)
                 logger.debug("Carpeta creada/asegurada: %s", target_folder)
+            if CCSI_COMMON_ENABLED:
+                ccsi_folder_name = f"V{NEXT_VERSION_CCSI}"
+                ccsi_target_folder = Path(BUILD_CCSI_DIRECTORY) / ccsi_folder_name
+                ccsi_target_folder.mkdir(parents=True, exist_ok=True)
+                logger.info("Carpeta CCSI creada/asegurada: %s", ccsi_target_folder)
+            else:
+                ccsi_folder_name = f"V{CURRENT_VERSION_CCSI}"
+                ccsi_target_folder = Path(BUILD_CCSI_DIRECTORY) / ccsi_folder_name
+                if not ccsi_target_folder.exists():
+                    raise FileNotFoundError(f"No se encontro la carpeta CCSI esperada: {ccsi_target_folder}")
+                logger.info("Utilizando carpeta CCSI existente: %s", ccsi_target_folder)
+            shortcut_path = package_root / f"{ccsi_folder_name}.lnk"
+            logger.info("Creando acceso directo hacia %s en %s", ccsi_target_folder, shortcut_path)
+            _create_shortcut(shortcut_path, ccsi_target_folder)
         case _:
             raise ValueError(f"Accion desconocida: {action}")
 
