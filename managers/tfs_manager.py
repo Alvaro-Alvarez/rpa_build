@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -54,6 +55,8 @@ class TfsManager:
         poll_interval: Optional[int] = None,
         timeout_secs: Optional[int] = None,
         build_definition_id: Optional[int] = None,
+        git_api_version: Optional[str] = None,
+        build_api_version: Optional[str] = None,
     ) -> None:
         """Inicializa el gestor.
 
@@ -67,10 +70,10 @@ class TfsManager:
             timeout_secs: Tiempo máximo de espera en segundos (por defecto `TFS_TIMEOUT_SECS` o 1800).
             build_definition_id: ID de definición de build por defecto (por defecto `BUILD_DEFINITION_ID`).
         """
-        self.org = org or os.getenv("ORG") or ""
-        self.project = project or os.getenv("PROJECT") or ""
-        self.pat = pat or os.getenv("PAT") or ""
-        self.base_url = (base_url or os.getenv("BASE_URL") or "").rstrip("/")
+        self.org = (org or os.getenv("ORG") or "").strip()
+        self.project = (project or os.getenv("PROJECT") or "").strip()
+        self.pat = (pat or os.getenv("PAT") or "").strip()
+        self.base_url = (base_url or os.getenv("BASE_URL") or "").rstrip("/").strip()
         self.repo_id = repo_id or os.getenv("REPO_ID") or None
         self.poll_interval = int(
             poll_interval if poll_interval is not None else os.getenv("TFS_POLL_INTERVAL", self.DEFAULT_POLL_INTERVAL)
@@ -99,11 +102,14 @@ class TfsManager:
         self._auth_header = {"Authorization": f"Basic {_b64_pat(self.pat)}"}
         self._root = f"{self.base_url}/{self.org}/{self.project}"
 
-        # Configurable API versions for on-prem TFS compatibility
-        # Examples: "7.1-preview.1", "6.0", "5.1", "4.1"
-        self.git_api_version = os.getenv("TFS_GIT_API_VERSION", "7.1-preview.1")
-        # Build API examples: "7.1-preview.7", "6.0", "5.1"
-        self.build_api_version = os.getenv("TFS_BUILD_API_VERSION", "7.1-preview.7")
+        # Configurable API versions for on-prem TFS compatibility.
+        # Priority: constructor args > env vars > defaults.
+        self.git_api_version = (
+            git_api_version or os.getenv("TFS_GIT_API_VERSION") or "7.1-preview.1"
+        )
+        self.build_api_version = (
+            build_api_version or os.getenv("TFS_BUILD_API_VERSION") or "7.1-preview.7"
+        )
 
         # Últimos IDs conocidos para conveniencia entre llamadas
         self._last_pr_id: Optional[int] = None
@@ -125,11 +131,25 @@ class TfsManager:
             raise TfsApiError(f"Error de red llamando {method} {url}: {exc}") from exc
 
         if resp.status_code >= 400:
-            detail = None
+            detail: Any = None
             try:
                 detail = resp.json()
             except Exception:
-                detail = resp.text
+                text = resp.text or ""
+                # Si TFS devuelve HTML, extraer el <title> para un mensaje útil.
+                title_match = re.search(r"<title>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+                title = title_match.group(1).strip() if title_match else ""
+                if title:
+                    detail = title
+                else:
+                    detail = text[:500]
+
+            if resp.status_code == 401 and isinstance(detail, str):
+                low = detail.lower()
+                if "token used has expired" in low or "pat used has expired" in low or "personal access token" in low:
+                    detail = (
+                        f"{detail}. Genere un PAT nuevo y actualice la configuración (config.py o variable PAT)."
+                    )
             raise TfsApiError(
                 f"HTTP {resp.status_code} en {method} {url}: {detail}"
             )

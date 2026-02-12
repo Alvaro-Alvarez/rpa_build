@@ -150,6 +150,7 @@ def create_and_checkout_build_branch(base_branch: str = MAIN_BRANCH) -> str:
 def create_and_checkout_build_branch_for(cwd: Path | str, base_branch: str = MAIN_BRANCH) -> str:
     """Crea y hace checkout a la rama de build en el repo indicado por 'cwd'."""
     new_branch = _format_build_branch_name(BUILD_VERSION)
+    # new_branch = 'test_rpa_202602_02'
     logger.info("Creando/moviendo a la rama de build '%s' basada en '%s' en %s", new_branch, base_branch, cwd)
     run_git_command(["fetch", "--all", "--prune"], cwd=cwd)
     try:

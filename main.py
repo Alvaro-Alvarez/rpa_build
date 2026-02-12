@@ -136,6 +136,9 @@ def _execute_action(action: Accion) -> None:
 
             for code_name, conf, branch in branches:
                 tfs = (conf.get("tfs") or {}).copy()
+                build_definition_id = tfs.get("BUILD_DEFINITION_ID")
+                poll_interval = tfs.get("TFS_POLL_INTERVAL")
+                timeout_secs = tfs.get("TFS_TIMEOUT_SECS")
                 # Preparar variables por código
                 if tfs.get("BUILD_DEFINITION_IDS"):
                     os.environ["BUILD_DEFINITION_IDS"] = str(tfs.get("BUILD_DEFINITION_IDS"))
@@ -148,6 +151,11 @@ def _execute_action(action: Accion) -> None:
                     pat=str(tfs.get("PAT") or ""),
                     base_url=str(tfs.get("BASE_URL") or ""),
                     repo_id=str(tfs.get("REPO_ID") or ""),
+                    build_definition_id=int(build_definition_id) if build_definition_id not in (None, "") else None,
+                    poll_interval=int(poll_interval) if poll_interval not in (None, "") else None,
+                    timeout_secs=int(timeout_secs) if timeout_secs not in (None, "") else None,
+                    git_api_version=str(tfs.get("TFS_GIT_API_VERSION") or ""),
+                    build_api_version=str(tfs.get("TFS_BUILD_API_VERSION") or ""),
                 )
                 tm.run_pr_pipeline(source_branch=branch, target_branch=conf.get("main_branch", MAIN_BRANCH), repo_id=str(tfs.get("REPO_ID") or ""))
             # TfsManager().run_pr_pipeline(source_branch='test_robobuild_1' or 'test_robobuild_1', target_branch=MAIN_BRANCH)
