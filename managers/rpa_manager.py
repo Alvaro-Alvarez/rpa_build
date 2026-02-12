@@ -11,7 +11,7 @@ from config import (
     BUILD_VERSION,
     PREVIOUS_BUILD_VERSION,
     RPA_UI_TARGETS,
-    get_enabled_codes,
+    get_enabled_codes_with_aip,
 )
 
 DUMMY_VERSION = "1.1.1.1"
@@ -21,11 +21,9 @@ IMAGE_WAIT_INTERVAL = 1
 IMAGES_DIR = Path(__file__).resolve().parent.parent / "assets" / "images"
 def _collect_aip_targets() -> tuple[str, ...]:
     paths: list[str] = []
-    for _name, conf in get_enabled_codes():
+    for _name, conf in get_enabled_codes_with_aip():
         paths.extend(conf.get("aip_paths") or [])
     return tuple(paths)
-
-AIP_TARGETS = _collect_aip_targets()
 window_title = 'Advanced Installer'
 
 
@@ -94,7 +92,11 @@ def update_aip_versions():
     logger.info("Comenzando actualizacion de versiones AIP")
     change_three_version = change_three_version_number()
     logger.info("Cambio en el tercer numero de version?: %s", change_three_version)
-    for aip_path in AIP_TARGETS:
+    aip_targets = _collect_aip_targets()
+    if not aip_targets:
+        logger.warning("No se encontraron paquetes AIP configurados para los códigos habilitados.")
+        return
+    for aip_path in aip_targets:
         logger.info("Actualizando paquete AIP: %s", aip_path)
         update_aip_version(aip_path, change_three_version)
     logger.info("Actualizacion de versiones AIP finalizada")

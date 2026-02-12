@@ -200,16 +200,43 @@ def commit_and_push_all_changes_for(
     cwd: Path | str,
     commit_message: str | None = None,
     remote: str = "origin",
+    skip_files: Sequence[str] | None = None,
 ) -> str:
-    """Agrega, commitea y hace push de cambios en el repo indicado por 'cwd'."""
+    """Agrega, commitea y hace push de cambios en el repo indicado por 'cwd'.
+
+    Permite omitir archivos específicos al preparar el commit mediante `skip_files`.
+    """
     branch = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd).stdout.strip()
     logger.info("Preparando commit de cambios en la rama '%s' (%s)", branch, cwd)
     status = run_git_command(["status", "--porcelain"], cwd=cwd).stdout.strip()
     if status:
         run_git_command(["add", "-A"], cwd=cwd)
-        message = commit_message or f"chore(build): publicar cambios para {BUILD_VERSION}"
-        run_git_command(["commit", "-m", message], cwd=cwd)
-        logger.info("Commit realizado: %s", message)
+        if skip_files:
+            for skip_file in skip_files:
+                if not skip_file:
+                    continue
+                try:
+                    file_status = run_git_command(
+                        ["status", "--porcelain", "--", skip_file], cwd=cwd
+                    ).stdout.strip()
+                except GitCommandError:
+                    continue
+                if not file_status:
+                    continue
+                logger.info("Omitiendo archivo %s del commit en %s", skip_file, cwd)
+                try:
+                    run_git_command(["reset", "HEAD", "--", skip_file], cwd=cwd)
+                except GitCommandError as exc:
+                    logger.warning(
+                        "No se pudo quitar %s del staging en %s: %s", skip_file, cwd, exc
+                    )
+        staged = run_git_command(["diff", "--cached", "--name-only"], cwd=cwd).stdout.strip()
+        if staged:
+            message = commit_message or f"chore(build): publicar cambios para {BUILD_VERSION}"
+            run_git_command(["commit", "-m", message], cwd=cwd)
+            logger.info("Commit realizado: %s", message)
+        else:
+            logger.info("No hay cambios pendientes para commitear en %s despues de omitir archivos", cwd)
     else:
         logger.info("No hay cambios pendientes para commitear en %s", cwd)
     try:

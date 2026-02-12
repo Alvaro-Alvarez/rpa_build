@@ -19,6 +19,7 @@ from config import (
     TEAMS_CONFIRMATION_PARTICIPANTS,
     get_code_config,
     get_enabled_codes,
+    get_enabled_codes_with_aip,
 )
 from logging_config import setup_logging
 from managers.teams_manager import open_teams_and_send_message, wait_for_ok_confirmations
@@ -106,20 +107,31 @@ def _execute_action(action: Accion) -> None:
                 git_manager.process_code_branch_for(conf.get("code_path"), conf.get("main_branch", MAIN_BRANCH))
             file_manager.update_assembly_versions()
         case Accion.UPDATE_AIP_VERSIONS:
-            # Asegurar rama main en cada código habilitado antes de modificar archivos
-            for _name, conf in get_enabled_codes():
+            codes_with_aip = get_enabled_codes_with_aip()
+            if not codes_with_aip:
+                logger.info("No hay códigos habilitados con paquetes AIP para actualizar; se omite el paso.")
+                return
+            # Asegurar rama main solo en los códigos que tienen AIPs configurados
+            for _name, conf in codes_with_aip:
                 git_manager.process_code_branch_for(conf.get("code_path"), conf.get("main_branch", MAIN_BRANCH))
             rpa_manager.update_aip_versions()
         case Accion.UPLOAD_CODE_AND_PR:
             # Crear rama, commitear, pushear y generar PR para todos los códigos habilitados
             import os
             branches: list[tuple[str, dict, str]] = []  # (code_name, conf, branch)
-            for code_name, conf in get_enabled_codes():
+            codes_to_process = list(get_enabled_codes())
+            if not codes_to_process:
+                logger.info("No hay códigos habilitados para publicar cambios.")
+                return
+
+            for code_name, conf in codes_to_process:
                 code_path = conf.get("code_path")
                 base_branch = conf.get("main_branch", MAIN_BRANCH)
                 git_manager.process_code_branch_for(code_path, base_branch)
                 build_branch = git_manager.create_and_checkout_build_branch_for(code_path, base_branch)
-                current_branch = git_manager.commit_and_push_all_changes_for(code_path)
+                current_branch = git_manager.commit_and_push_all_changes_for(
+                    code_path, skip_files=(".gitignore",)
+                )
                 branches.append((code_name, conf, current_branch or build_branch))
 
             for code_name, conf, branch in branches:
