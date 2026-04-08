@@ -1,0 +1,61 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: main - all",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "args": ["all"]
+    },
+    {
+      "name": "Python: main - get_jira_issues",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "args": ["get_jira_issues"]
+    },
+    {
+      "name": "Python: main - update_change_log",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "args": ["update_change_log"]
+    },
+    {
+      "name": "Python: main - update_assembly_versions",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "args": ["update_assembly_versions"]
+    },
+    {
+      "name": "Python: main - update_aip_versions",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "args": ["update_aip_versions"]
+    },
+    {
+      "name": "Python: main - upload_code_and_pr",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "args": ["upload_code_and_pr"]
+    },
+    {
+      "name": "Python: main - build_package",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "args": ["build_package"]
+    }
+  ]
+}

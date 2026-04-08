@@ -1,16 +1,15 @@
 import logging
 import subprocess
 import time
+from enum import Enum
 from pathlib import Path
 
 import pyautogui
 import pygetwindow as gw
-from enum import Enum
 
 from config import (
-    BUILD_VERSION,
-    PREVIOUS_BUILD_VERSION,
     RPA_UI_TARGETS,
+    get_code_versions,
     get_enabled_codes_with_aip,
 )
 
@@ -19,12 +18,7 @@ IMAGE_CONFIDENCE = 0.8
 IMAGE_WAIT_TIMEOUT = 45
 IMAGE_WAIT_INTERVAL = 1
 IMAGES_DIR = Path(__file__).resolve().parent.parent / "assets" / "images"
-def _collect_aip_targets() -> tuple[str, ...]:
-    paths: list[str] = []
-    for _name, conf in get_enabled_codes_with_aip():
-        paths.extend(conf.get("aip_paths") or [])
-    return tuple(paths)
-window_title = 'Advanced Installer'
+window_title = "Advanced Installer"
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +27,16 @@ logger = logging.getLogger(__name__)
 class TargetMode(Enum):
     POINT = "point"
     IMG = "img"
+
+
+def _collect_aip_targets() -> tuple[tuple[str, str, str], ...]:
+    targets: list[tuple[str, str, str]] = []
+    for code_name, conf in get_enabled_codes_with_aip():
+        current_version, next_version = get_code_versions(code_name)
+        for aip_path in conf.get("aip_paths") or []:
+            targets.append((str(aip_path), current_version, next_version))
+    return tuple(targets)
+
 
 # Build map for quick lookup from config
 try:
@@ -51,7 +55,6 @@ def _get_target_config(name: str) -> dict:
 def _normalize_point(point_px) -> tuple[int, int]:
     if point_px is None:
         raise ValueError("point_px is None")
-    # Accept (x,y) tuple/list or {x:.., y:..}
     if isinstance(point_px, (list, tuple)) and len(point_px) == 2:
         return int(point_px[0]), int(point_px[1])
     if isinstance(point_px, dict) and "x" in point_px and "y" in point_px:
@@ -65,7 +68,6 @@ def find_click_point(name: str, *, timeout: int = IMAGE_WAIT_TIMEOUT, interval: 
     if mode == TargetMode.POINT.value:
         x, y = _normalize_point(conf.get("point_px"))
         return x, y
-    # fallback to image mode
     image_name = conf.get("img_name") or conf.get("image")
     if not image_name:
         raise ValueError(f"UI target '{name}' missing 'img_name' for mode=img")
@@ -78,7 +80,6 @@ def ensure_target_ready(name: str, *, timeout: int = IMAGE_WAIT_TIMEOUT, interva
     conf = _get_target_config(name)
     mode = str(conf.get("mode", "img")).lower()
     if mode == TargetMode.IMG.value:
-        # Ensure the image is present; raise TimeoutError on failure
         wait_for_image(conf.get("img_name"), timeout=timeout, interval=interval)
     return True
 
@@ -88,21 +89,29 @@ def click_ui_target(name: str):
     pyautogui.click(x, y)
     time.sleep(1)
 
+
 def update_aip_versions():
     logger.info("Comenzando actualizacion de versiones AIP")
-    change_three_version = change_three_version_number()
-    logger.info("Cambio en el tercer numero de version?: %s", change_three_version)
     aip_targets = _collect_aip_targets()
     if not aip_targets:
-        logger.warning("No se encontraron paquetes AIP configurados para los códigos habilitados.")
+        logger.warning("No se encontraron paquetes AIP configurados para los codigos habilitados.")
         return
-    for aip_path in aip_targets:
-        logger.info("Actualizando paquete AIP: %s", aip_path)
-        update_aip_version(aip_path, change_three_version)
+
+    for aip_path, current_version, next_version in aip_targets:
+        change_three_version = change_three_version_number(current_version, next_version)
+        logger.info(
+            "Actualizando paquete AIP: %s | version actual=%s | version nueva=%s | cambio tercer numero=%s",
+            aip_path,
+            current_version,
+            next_version,
+            change_three_version,
+        )
+        update_aip_version(aip_path, current_version, next_version, change_three_version)
+
     logger.info("Actualizacion de versiones AIP finalizada")
 
 
-def update_aip_version(aip_path, change_three_version):
+def update_aip_version(aip_path, current_version: str, next_version: str, change_three_version: bool):
     logger.info("Abriendo instalador AIP: %s", aip_path)
     subprocess.Popen([aip_path], shell=True)
     time.sleep(5)
@@ -133,17 +142,15 @@ def update_aip_version(aip_path, change_three_version):
     try:
         logger.info("Esperando menu principal del instalador para %s", aip_path)
         wait_for_image("ai_menu.png", taskbar_image_name="adv_installer_work_task.png", taskbar_click_every=3)
-    except TimeoutError as exc:
+    except TimeoutError:
         logger.warning(
             "No se detecto la pantalla principal al abrir %s; intentando restaurar desde la barra de tareas",
             aip_path,
         )
-        # Intentar encontrar el icono del instalador en la barra de tareas y hacer clic
         try:
             taskbar_icon = wait_for_image("adv_installer_work_task.png", timeout=15, interval=1)
             pyautogui.click(pyautogui.center(taskbar_icon))
             time.sleep(2)
-            # Reintentar localizar el menu principal tras restaurar la ventana
             wait_for_image(
                 "ai_menu.png",
                 timeout=30,
@@ -172,8 +179,8 @@ def update_aip_version(aip_path, change_three_version):
 
     logger.info("Campo de version localizado para %s", aip_path)
     if change_three_version:
-        logger.info("Aplicando version final %s", BUILD_VERSION)
-        apply_version(BUILD_VERSION)
+        logger.info("Aplicando version final %s", next_version)
+        apply_version(next_version)
         regenerate_identification()
         click_ui_target("product_details_btn")
     else:
@@ -193,8 +200,12 @@ def update_aip_version(aip_path, change_three_version):
                 f"No se pudo volver a localizar el campo de version para {aip_path}."
             ) from exc
 
-        logger.info("Aplicando version final %s despues de regenerar identificacion", BUILD_VERSION)
-        apply_version(BUILD_VERSION)
+        logger.info(
+            "Aplicando version final %s despues de regenerar identificacion (version previa configurada: %s)",
+            next_version,
+            current_version,
+        )
+        apply_version(next_version)
         regenerate_identification()
         click_ui_target("product_details_btn")
 
@@ -202,16 +213,16 @@ def update_aip_version(aip_path, change_three_version):
     save_and_close()
 
 
-def change_three_version_number():
-    v1_parts = PREVIOUS_BUILD_VERSION.split(".")
-    v2_parts = BUILD_VERSION.split(".")
+def change_three_version_number(current_version: str, next_version: str):
+    v1_parts = current_version.split(".")
+    v2_parts = next_version.split(".")
     v1_three = int(v1_parts[2])
     v2_three = int(v2_parts[2])
     logger.info(
         "Comparando tercer numero de version: anterior=%s (%s) vs actual=%s (%s)",
-        PREVIOUS_BUILD_VERSION,
+        current_version,
         v1_three,
-        BUILD_VERSION,
+        next_version,
         v2_three,
     )
     return v1_three != v2_three
@@ -240,10 +251,9 @@ def wait_for_image(
     while time.perf_counter() < deadline:
         try:
             match = pyautogui.locateOnScreen(str(image_path), confidence=IMAGE_CONFIDENCE)
-        except Exception as exc:  # Captura errores de captura de pantalla (p.ej., OSError: screen grab failed)
+        except Exception as exc:
             last_error = exc
             match = None
-            # En caso de fallo de captura, registrar y continuar reintentando hasta el timeout
             logger.warning(
                 "Fallo al capturar pantalla buscando '%s' (intento %s): %s",
                 image_path,
@@ -255,7 +265,6 @@ def wait_for_image(
             logger.info("Imagen '%s' encontrada en el intento %s", image_path, attempt)
             return match
 
-        # Intento auxiliar: si se proporciono un icono de barra de tareas, intentamos traer la ventana al frente
         if taskbar_image_name and attempt % max(1, taskbar_click_every) == 0:
             taskbar_image_path = IMAGES_DIR / taskbar_image_name
             try:
@@ -320,9 +329,3 @@ def save_and_close():
     pyautogui.hotkey("alt", "f4")
     time.sleep(1)
     logger.info("Instalador cerrado correctamente")
-
-
-
-
-
-
