@@ -16,15 +16,14 @@ from config import (
     CURRENT_VERSION_CCSI,
     MAIN_BRANCH,
     NEXT_VERSION_CCSI,
-    TEAMS_CONFIRMATION_PARTICIPANTS,
     get_code_config,
     get_enabled_codes,
     get_enabled_codes_with_aip,
 )
 from logging_config import setup_logging
-from managers.teams_manager import open_teams_and_send_message, wait_for_ok_confirmations
 
 logger = logging.getLogger(__name__)
+JIRA_VALIDATION_REPORT_PATH = Path(__file__).resolve().parent / "jira_validation_issues.tmp.txt"
 
 
 def _powershell_escape(path: Path) -> str:
@@ -60,36 +59,84 @@ def start_building(actions: Iterable[Accion]) -> None:
         _execute_action(action)
         logger.info("Paso finalizado: %s", action.value)
 
+
+def _write_validation_issues_report(issues_extended: list[dict]) -> Path:
+    lines: list[str] = [
+        "Robobuild - Detalle de inconsistencias detectadas en Jira",
+        "",
+        "Motivo general: falta el tag DevTeam o el campo FixVersion esta incompleto.",
+        "",
+    ]
+
+    for index, item in enumerate(issues_extended, start=1):
+        key = (item.get("key") or "").strip()
+        summary = (item.get("summary") or "").strip()
+        assignee = (item.get("assignee_name") or "").strip()
+        link = (item.get("link") or "").strip()
+        lines.extend(
+            [
+                f"{index}. Key: {key or '-'}",
+                f"   Summary: {summary or '-'}",
+                f"   Assignee: {assignee or '-'}",
+                f"   Link: {link or '-'}",
+                "",
+            ]
+        )
+
+    JIRA_VALIDATION_REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
+    return JIRA_VALIDATION_REPORT_PATH
+
+
+def _report_validation_issues_to_console(issues_extended: list[dict]) -> None:
+    report_path = _write_validation_issues_report(issues_extended)
+    summary = (
+        "Se detectaron inconsistencias en Jira vinculadas a tags o FixVersion. "
+        f"El detalle quedo registrado en: {report_path}"
+    )
+    commands = "Comandos disponibles para continuar: ok, force, restart."
+    logger.warning(summary)
+    logger.info(commands)
+    print(summary)
+    print(commands)
+
+
+def _get_console_decision() -> str:
+    prompt = "Ingresa un comando [ok/force/restart]: "
+    valid = {"ok", "force", "restart"}
+
+    while True:
+        try:
+            raw_value = input(prompt)
+        except EOFError as exc:
+            raise RuntimeError(
+                "No hay entrada interactiva disponible para confirmar el paso GET_JIRA_ISSUES."
+            ) from exc
+
+        decision = raw_value.strip().lower()
+        if not decision:
+            decision = "ok"
+        if decision in valid:
+            logger.info("Decision recibida por consola: %s", decision)
+            return decision
+
+        logger.warning("Comando invalido ingresado por consola: %s", raw_value)
+        print("Comando invalido. Usa: ok, force o restart.")
+
 def _execute_action(action: Accion) -> None:
     match action:
         case Accion.GET_JIRA_ISSUES:
             issues_extended = jira_manager.get_jira_issues_validate_tags()
             if issues_extended:
-                open_teams_and_send_message(issues_extended)
-                # Esperar confirmaciones solo de responsables presentes en los jiras
-                responsible_keys = {(it.get("assignee_jira_key") or "").strip() for it in issues_extended}
-                responsible_keys.discard("")
-                participants_to_wait = [
-                    p for p in TEAMS_CONFIRMATION_PARTICIPANTS
-                    if (p.get("jira_key") or "").strip() in responsible_keys
-                ]
-                # Fallback por nombre si no hubo match por key
-                if not participants_to_wait:
-                    responsible_names = {(it.get("assignee_name") or "").strip() for it in issues_extended}
-                    responsible_names.discard("")
-                    participants_to_wait = [
-                        p for p in TEAMS_CONFIRMATION_PARTICIPANTS
-                        if (p.get("name") or "").strip() in responsible_names
-                    ]
-                decision = wait_for_ok_confirmations(participants=participants_to_wait) if participants_to_wait else "ok"
+                _report_validation_issues_to_console(issues_extended)
+                decision = _get_console_decision()
             else:
                 decision = "ok"
             if decision == "restart":
-                logger.warning("Se solicito reinicio desde Teams; reiniciando paso GET_JIRA_ISSUES.")
+                logger.warning("Se solicito reinicio por consola; reiniciando paso GET_JIRA_ISSUES.")
                 _execute_action(Accion.GET_JIRA_ISSUES)
                 return
             if decision == "force":
-                logger.warning("Se forzo el avance desde Teams; continuando sin todas las confirmaciones.")
+                logger.warning("Se forzo el avance por consola; continuando sin validaciones adicionales.")
             issues = jira_manager.get_jira_issues()
             jira_manager.export_issues(issues)
 
