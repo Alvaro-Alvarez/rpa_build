@@ -10,12 +10,13 @@ import config as config_module
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from build_runner import BuildRunner
+from environment_health import run_environment_health_checks
 from enums.enums import Accion
 from logging_config import setup_logging
 
 APP_TITLE = "CitySensAI Build"
-CONFIG_OVERRIDES_PATH = Path(__file__).resolve().with_name("config_overrides.json")
-PIPELINE_LAYOUT_PATH = Path(__file__).resolve().with_name("pipeline_layout.json")
+CONFIG_OVERRIDES_PATH = config_module.CONFIG_OVERRIDES_PATH
+PIPELINE_LAYOUT_PATH = config_module.APP_STATE_DIR / "pipeline_layout.json"
 
 ACTION_META: dict[Accion, dict[str, str]] = {
     Accion.GET_JIRA_ISSUES: {
@@ -129,6 +130,170 @@ class ConfigWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Configuracion")
         self.resize(1100, 820)
         self.setCentralWidget(config_editor)
+
+
+class EnvironmentHealthWorker(QtCore.QObject):
+    finished = QtCore.Signal(object)
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        self.finished.emit(run_environment_health_checks())
+
+
+class EnvironmentHealthWindow(QtWidgets.QMainWindow):
+    loading_changed = QtCore.Signal(bool)
+    loading_text_changed = QtCore.Signal(str)
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Salud del entorno")
+        self.resize(1080, 720)
+        self._spinner_frames = ["|", "/", "-", "\\"]
+        self._spinner_index = 0
+        self._is_loading = False
+        self._worker_thread: QtCore.QThread | None = None
+        self._worker: EnvironmentHealthWorker | None = None
+
+        self._spinner_timer = QtCore.QTimer(self)
+        self._spinner_timer.setInterval(120)
+        self._spinner_timer.timeout.connect(self._tick_spinner)
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root_layout = QtWidgets.QVBoxLayout(central)
+        root_layout.setContentsMargins(18, 18, 18, 18)
+        root_layout.setSpacing(14)
+
+        header_layout = QtWidgets.QHBoxLayout()
+        title_box = QtWidgets.QVBoxLayout()
+        title = QtWidgets.QLabel("Salud del entorno")
+        title.setObjectName("sectionTitle")
+        subtitle = QtWidgets.QLabel("Valida software, conectividad y rutas configuradas antes de ejecutar el flujo.")
+        subtitle.setObjectName("sectionSubtitle")
+        subtitle.setWordWrap(True)
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header_layout.addLayout(title_box)
+        header_layout.addStretch(1)
+
+        self.refresh_button = QtWidgets.QPushButton("Volver a validar")
+        header_layout.addWidget(self.refresh_button)
+        root_layout.addLayout(header_layout)
+
+        self.summary_label = QtWidgets.QLabel("Aun no se ejecutaron validaciones.")
+        self.summary_label.setObjectName("healthSummary")
+        self.summary_label.setWordWrap(True)
+        root_layout.addWidget(self.summary_label)
+
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Estado", "Categoria", "Chequeo", "Detalle"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        root_layout.addWidget(self.table, 1)
+
+        self.refresh_button.clicked.connect(self.refresh_checks)
+
+    def refresh_checks(self) -> None:
+        if self._is_loading:
+            return
+        self._set_loading(True)
+        self.summary_label.setText("Validando entorno...")
+
+        self._worker_thread = QtCore.QThread(self)
+        self._worker = EnvironmentHealthWorker()
+        self._worker.moveToThread(self._worker_thread)
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_checks_finished)
+        self._worker.finished.connect(self._worker_thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker_thread.finished.connect(self._worker_thread.deleteLater)
+        self._worker_thread.finished.connect(self._on_worker_thread_finished)
+        self._worker_thread.start()
+
+    def _on_checks_finished(self, checks: object) -> None:
+        checks = list(checks or [])
+        self.table.setRowCount(len(checks))
+
+        ok_count = 0
+        warning_count = 0
+        error_count = 0
+        for row, check in enumerate(checks):
+            status = str(check.get("status") or "")
+            if status == "ok":
+                ok_count += 1
+                status_text = "OK"
+                status_color = QtGui.QColor("#166534")
+                background = QtGui.QColor("#ecfdf3")
+            elif status == "warning":
+                warning_count += 1
+                status_text = "Aviso"
+                status_color = QtGui.QColor("#9a3412")
+                background = QtGui.QColor("#fff7ed")
+            else:
+                error_count += 1
+                status_text = "Error"
+                status_color = QtGui.QColor("#b91c1c")
+                background = QtGui.QColor("#fff1f2")
+
+            items = [
+                QtWidgets.QTableWidgetItem(status_text),
+                QtWidgets.QTableWidgetItem(str(check.get("category") or "")),
+                QtWidgets.QTableWidgetItem(str(check.get("name") or "")),
+                QtWidgets.QTableWidgetItem(str(check.get("detail") or "")),
+            ]
+            for item in items:
+                item.setBackground(background)
+                if item is items[0]:
+                    item.setForeground(status_color)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+            for column, item in enumerate(items):
+                self.table.setItem(row, column, item)
+
+        if error_count:
+            self.summary_label.setText(
+                f"Se detectaron {error_count} errores, {warning_count} avisos y {ok_count} validaciones correctas."
+            )
+        elif warning_count:
+            self.summary_label.setText(
+                f"No hay errores bloqueantes. Se detectaron {warning_count} avisos y {ok_count} validaciones correctas."
+            )
+        else:
+            self.summary_label.setText(f"Entorno validado correctamente. {ok_count} chequeos OK.")
+
+        self._set_loading(False)
+
+    def _on_worker_thread_finished(self) -> None:
+        self._worker_thread = None
+        self._worker = None
+
+    def _set_loading(self, loading: bool) -> None:
+        self._is_loading = loading
+        self.refresh_button.setEnabled(not loading)
+        self.loading_changed.emit(loading)
+        if loading:
+            self._spinner_index = 0
+            self._spinner_timer.start()
+            self._tick_spinner()
+        else:
+            self._spinner_timer.stop()
+            self.refresh_button.setText("Volver a validar")
+            self.loading_text_changed.emit("Salud del entorno")
+
+    def _tick_spinner(self) -> None:
+        if not self._is_loading:
+            return
+        frame = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
+        self._spinner_index += 1
+        text = f"{frame} Validando..."
+        self.refresh_button.setText(text)
+        self.loading_text_changed.emit(text)
 
 
 class DescriptionDialog(QtWidgets.QDialog):
@@ -850,16 +1015,20 @@ class ConfigEditorWidget(QtWidgets.QWidget):
         self.code_editors: dict[str, CodeEditorWidget] = {}
 
         root_layout = QtWidgets.QVBoxLayout(self)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(12)
+        root_layout.setContentsMargins(18, 18, 18, 18)
+        root_layout.setSpacing(16)
 
         header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 6)
+        header_layout.setSpacing(12)
         title = QtWidgets.QLabel("Configuracion")
         title.setObjectName("sectionTitle")
         subtitle = QtWidgets.QLabel("Edita valores efectivos del build y guardalos en config_overrides.json.")
         subtitle.setObjectName("sectionSubtitle")
         subtitle.setWordWrap(True)
         title_box = QtWidgets.QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(8)
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         header_layout.addLayout(title_box)
@@ -895,8 +1064,8 @@ class ConfigEditorWidget(QtWidgets.QWidget):
     def _build_general_tab(self) -> None:
         container = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(16)
 
         form_group = QtWidgets.QGroupBox("Valores generales")
         form_layout = QtWidgets.QFormLayout(form_group)
@@ -922,8 +1091,8 @@ class ConfigEditorWidget(QtWidgets.QWidget):
 
     def _build_codes_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout(self.codes_tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(16)
 
         header = QtWidgets.QGroupBox("Codigo seleccionado")
         header_layout = QtWidgets.QHBoxLayout(header)
@@ -1010,6 +1179,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.log_window = LogWindow(self)
         self.config_editor = ConfigEditorWidget()
         self.config_window = ConfigWindow(self.config_editor, self)
+        self.health_window = EnvironmentHealthWindow(self)
+        self.health_window.loading_changed.connect(self._set_health_button_loading)
+        self.health_window.loading_text_changed.connect(self._set_health_button_text)
 
         self._setup_logging_bridge()
         self._build_ui()
@@ -1053,9 +1225,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.run_all_button = QtWidgets.QPushButton("Ejecutar flujo completo")
         self.reset_button = QtWidgets.QPushButton("Reiniciar estados")
+        self.health_button = QtWidgets.QPushButton("Salud del entorno")
         self.config_button = QtWidgets.QPushButton("Configuracion")
         self.logs_button = QtWidgets.QPushButton("Ver logs")
         header_layout.addWidget(self.logs_button)
+        header_layout.addWidget(self.health_button)
         header_layout.addWidget(self.config_button)
         header_layout.addWidget(self.reset_button)
         header_layout.addWidget(self.run_all_button)
@@ -1123,6 +1297,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_all_button.clicked.connect(self._run_all_actions)
         self.reset_button.clicked.connect(self._reset_statuses)
         self.logs_button.clicked.connect(self._show_logs_window)
+        self.health_button.clicked.connect(self._show_health_window)
         self.config_button.clicked.connect(self._show_config_window)
         self.review_ok_button.clicked.connect(lambda: self._submit_review_decision("ok"))
         self.review_force_button.clicked.connect(lambda: self._submit_review_decision("force"))
@@ -1145,6 +1320,26 @@ class MainWindow(QtWidgets.QMainWindow):
                 background: white;
                 border: 1px solid #d9e4ef;
                 border-radius: 5px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #d9e4ef;
+                border-radius: 5px;
+                background: #ffffff;
+                margin-top: 8px;
+                padding-top: 8px;
+            }
+            QTabBar::tab {
+                background: #f4f7fb;
+                border: 1px solid #d9e4ef;
+                border-bottom: none;
+                border-top-left-radius: 5px;
+                border-top-right-radius: 5px;
+                padding: 8px 14px;
+                margin-right: 4px;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #0f172a;
             }
             QGraphicsView#pipelineBoard {
                 background: #eef3f9;
@@ -1227,6 +1422,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QGroupBox { font-weight: 700; margin-top: 10px; padding-top: 18px; }
             QHeaderView::section { background: #f4f6fb; border: none; border-bottom: 1px solid #dde4ef; padding: 8px; font-weight: 700; }
             QLabel#reviewSummary { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; border-radius: 10px; padding: 10px 12px; }
+            QLabel#healthSummary { background: #eef6ff; color: #1d4f91; border: 1px solid #cfe0fb; border-radius: 10px; padding: 10px 12px; }
             QFormLayout { margin-top: 8px; }
             """
         )
@@ -1285,6 +1481,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.config_window.show()
         self.config_window.raise_()
         self.config_window.activateWindow()
+
+    def _show_health_window(self) -> None:
+        self.health_window.refresh_checks()
+        self.health_window.show()
+        self.health_window.raise_()
+        self.health_window.activateWindow()
+
+    def _set_health_button_loading(self, loading: bool) -> None:
+        self.health_button.setEnabled(not loading)
+
+    def _set_health_button_text(self, text: str) -> None:
+        self.health_button.setText(text)
 
     def _on_step_changed(self, action_value: str, status: str, message: str) -> None:
         if action_value in self.step_cards:

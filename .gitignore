@@ -25,3 +25,5 @@ jira_issues.xlsx
 jira_validation_issues.tmp.txt
 config_overrides.json
 pipeline_layout.json
+build/
+dist/
