@@ -1,4 +1,4 @@
-import json
+﻿import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -70,16 +70,16 @@ def get_jira_issues(max_results: int = JIRA_MAX_RESULTS) -> Dict[str, str]:
 
 def get_jira_issues_extended(max_results: int = JIRA_MAX_RESULTS) -> List[dict]:
     """
-    Obtiene issues de Jira incluyendo datos del responsable (nombre y email si está disponible).
+    Obtiene issues de Jira incluyendo datos del responsable (nombre y email si estÃ¡ disponible).
 
-    Mantiene intacto el comportamiento de get_jira_issues(); esta función es adicional
-    para enriquecer la información sin afectar la exportación existente.
+    Mantiene intacto el comportamiento de get_jira_issues(); esta funciÃ³n es adicional
+    para enriquecer la informaciÃ³n sin afectar la exportaciÃ³n existente.
 
     Retorna una lista de diccionarios con las claves:
       - 'key': str
       - 'summary': str
       - 'assignee_name': str (puede ser "" si no hay asignado)
-      - 'assignee_email': str (puede ser "" si no está disponible por políticas de Jira)
+      - 'assignee_email': str (puede ser "" si no estÃ¡ disponible por polÃ­ticas de Jira)
     """
     logger.info(
         "Preparando consulta extendida a Jira con un maximo de %s resultados",
@@ -108,7 +108,7 @@ def get_jira_issues_extended(max_results: int = JIRA_MAX_RESULTS) -> List[dict]:
         summary = (fields.get("summary") or "").strip()
         assignee = fields.get("assignee") or {}
 
-        # En Jira Cloud, el emailAddress puede no estar disponible por políticas de privacidad (GDPR)
+        # En Jira Cloud, el emailAddress puede no estar disponible por polÃ­ticas de privacidad (GDPR)
         assignee_name = (assignee.get("displayName") or "").strip()
         assignee_email = (assignee.get("emailAddress") or "").strip()
 
@@ -199,17 +199,17 @@ def _request_jira(method: str, url: str, **kwargs) -> requests.Response:
 
 def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[dict]:
     """
-    Nueva consulta a Jira usando JIRA_VALIDATE_TAGS con reemplazos dinámicos:
+    Nueva consulta a Jira usando JIRA_VALIDATE_TAGS con reemplazos dinÃ¡micos:
       - {PARTICIPANTS}: jira_key de todos los participantes (incluidos deshabilitados)
-      - {FIX_NUMBER_ONE}: primeros 2 números de BUILD_VERSION (x.xx)
-      - {FIX_NUMBER_TWO}: primeros 3 números (x.xx.x)
-      - {FIX_NUMBER_THREE}: versión completa (4 números)
-      - {LAST_BUILD_DATE}: versionDate del índice 0 del JSON CHANGE_LOG_PATH
+      - {FIX_NUMBER_ONE}: primeros 2 nÃºmeros de BUILD_VERSION (x.xx)
+      - {FIX_NUMBER_TWO}: primeros 3 nÃºmeros (x.xx.x)
+      - {FIX_NUMBER_THREE}: versiÃ³n completa (4 nÃºmeros)
+      - {LAST_BUILD_DATE}: versionDate del Ã­ndice 0 del JSON CHANGE_LOG_PATH
 
     Devuelve lista de dicts: key, summary, assignee_name, assignee_email, link.
     """
     logger.info(
-        "Preparando consulta de validación de tags en Jira (max %s)", max_results
+        "Preparando consulta de validaciÃ³n de tags en Jira (max %s)", max_results
     )
 
     # Participantes (todas las jira_key, incluso deshabilitados)
@@ -228,7 +228,7 @@ def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[d
     fix_two = ".".join(vparts[:3])
     fix_three = ".".join(vparts[:4])
 
-    # Fecha del �ltimo build desde el change log (posici�n 0))
+    # Fecha del último build desde el change log (posición 0))
     try:
         cl_path = Path(get_changelog_path())
         with cl_path.open("r", encoding="utf-8") as f:
@@ -236,11 +236,13 @@ def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[d
         last_build_date_raw = (content.get("changelogData") or [{}])[0].get("versionDate") or ""
         # Formatear fecha a YYYY-MM-DD
         last_build_date = _to_ymd(last_build_date_raw)
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "No se pudo leer versionDate[0] desde el change log: %s", get_changelog_path()
         )
-        return []
+        raise RuntimeError(
+            f"No se pudo leer versionDate[0] desde el change log configurado: {get_changelog_path()}"
+        ) from exc
 
     jql = (
         JIRA_VALIDATE_TAGS
@@ -256,15 +258,15 @@ def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[d
         "maxResults": max_results,
         "fields": JIRA_FIELDS_EXT,
     }
-    logger.info("Ejecutando consulta JQL (validación): %s", query["jql"])
+    logger.info("Ejecutando consulta JQL (validaciÃ³n): %s", query["jql"])
 
     try:
         response = _request_jira("GET", f"{JIRA_URL}{JIRA_SEARCH_ENDPOINT}", params=query)
     except Exception:
-        logger.exception("No se pudo obtener la informacion de Jira (validación)")
+        logger.exception("No se pudo obtener la informacion de Jira (validaciÃ³n)")
         raise
 
-    logger.info("Respuesta de Jira (validación) con codigo %s", response.status_code)
+    logger.info("Respuesta de Jira (validaciÃ³n) con codigo %s", response.status_code)
     data = response.json()
 
     results: List[dict] = []
@@ -291,7 +293,7 @@ def get_jira_issues_validate_tags(max_results: int = JIRA_MAX_RESULTS) -> List[d
                 }
             )
 
-    logger.info("Se recuperaron %s issues de Jira (validación)", len(results))
+    logger.info("Se recuperaron %s issues de Jira (validaciÃ³n)", len(results))
     return results
 
 
@@ -315,4 +317,5 @@ def _to_ymd(date_str: str) -> str:
             pass
     # fallback: devolver original
     return s
+
 

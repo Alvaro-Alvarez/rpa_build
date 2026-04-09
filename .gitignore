@@ -23,3 +23,5 @@ jira_issues.xlsx
 # Logs
 *.log
 jira_validation_issues.tmp.txt
+config_overrides.json
+pipeline_layout.json

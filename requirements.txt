@@ -7,3 +7,4 @@ pyperclip
 openpyxl
 pillow
 opencv-python
+PySide6
